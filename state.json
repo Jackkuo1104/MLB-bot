@@ -10,7 +10,7 @@
     },
     "849811": {
       "abstract": "Preview",
-      "status": "Scheduled",
+      "status": "Pre-Game",
       "away": 0,
       "home": 0,
       "started": false,
@@ -156,5 +156,5 @@
     "WBCTT:2026:701350:940:",
     "WBCTT:2026:660271:843:"
   ],
-  "awards_checked": 1792009878.6051807
+  "awards_checked": 1792011908.2861679
 }
