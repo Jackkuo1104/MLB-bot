@@ -1,0 +1,44 @@
+name: Check MLB updates
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"  # 每 5 分鐘（GitHub 排程常會延遲幾分鐘到幾十分鐘，比分不會很即時）
+  workflow_dispatch:         # 可在 Actions 頁面手動執行
+
+permissions:
+  contents: write            # 需要把 state.json 存回 repo
+
+concurrency:
+  group: check-mlb           # 避免兩次同時執行而重複發文
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Check MLB and post to Discord
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          FOLLOW_TEAMS: ${{ vars.FOLLOW_TEAMS }}
+        run: python check_once.py
+
+      - name: Save state.json
+        run: |
+          if [ -n "$(git status --porcelain -- state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "Update state.json"
+            git push
+          fi
