@@ -1,16 +1,24 @@
 {
   "games": {
-    "849813": {
-      "abstract": "Final",
-      "status": "Final",
-      "away": 1,
-      "home": 3,
-      "started": true,
-      "plays": null
-    },
     "849811": {
       "abstract": "Live",
       "status": "Warmup",
+      "away": 0,
+      "home": 0,
+      "started": false,
+      "plays": 0
+    },
+    "849818": {
+      "abstract": "Preview",
+      "status": "Scheduled",
+      "away": 0,
+      "home": 0,
+      "started": false,
+      "plays": 0
+    },
+    "849810": {
+      "abstract": "Preview",
+      "status": "Scheduled",
       "away": 0,
       "home": 0,
       "started": false,
