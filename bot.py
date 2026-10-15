@@ -46,6 +46,11 @@ SEEN_LIMIT = 500  # 只保留最近的 ID，避免檔案無限變大
 TW = timezone(timedelta(hours=8))
 ET = ZoneInfo("America/New_York")  # 自動處理夏令/冬令時間
 REFRESH_SECONDS = 12 * 3600  # 球隊、獎項清單多久重新抓一次
+LOTTERY_TEAMS = 18  # 樂透抽籤的球隊數（沒進季後賽的 18 隊，前 6 順位用抽的）
+LOTTERY_DRAWN = 6
+LOTTERY_MONTHS = (12, 1)  # 抽籤在 12 月冬季會議；這段期間每次都檢查順位，其他月份每小時一次
+DRAFT_LIVE_SECONDS = 15 * 60  # 最後一次有人被選中後 15 分鐘內算「選秀進行中」，GitHub 版會每 20 秒檢查一次
+DRAFT_ROUND_ZH = {"PPI": "新秀獎勵籤", "CB-A": "競爭平衡 A 輪", "CB-B": "競爭平衡 B 輪", "SUP-2": "第 2 輪補償籤"}
 
 TEAMS = {  # 預設的 MLB 球隊 ID → (縮寫, 中文隊名)；執行時會用 API 的最新球隊清單更新
     108: ("LAA", "天使"), 109: ("AZ", "響尾蛇"), 110: ("BAL", "金鶯"), 111: ("BOS", "紅襪"),
@@ -987,6 +992,187 @@ async def honor_updates(session: aiohttp.ClientSession, state: dict, initial: bo
     return [honor_message(items) for _, items in sorted(groups.items())]  # 舊的先發
 
 
+# ===== 選秀、樂透抽籤 =====
+def draft_year() -> int:
+    """選秀在 7 月，8 月以後就看明年的選秀（12 月的抽籤也是明年的選秀）"""
+    now = datetime.now(ET)
+    return now.year if now.month <= 7 else now.year + 1
+
+
+async def fetch_draft_picks(session: aiohttp.ClientSession, year: int, **params) -> list[tuple[str, dict]]:
+    """[(輪次, 順位資料)]，依順位排序；順位還沒決定時回傳空清單"""
+    data = await get_json(session, f"{MLB_API}/draft/{year}", params or None)
+    picks = [(r.get("round", ""), p) for r in (data.get("drafts") or {}).get("rounds") or []
+             for p in r.get("picks") or []]
+    return sorted(picks, key=lambda x: x[1].get("pickNumber") or 0)
+
+
+async def fetch_latest_pick(session: aiohttp.ClientSession, year: int) -> dict | None:
+    """最新選出的一位（資料很小，每次都可以查）；選秀還沒開始時 MLB 會回錯誤，當作沒有"""
+    try:
+        return (await get_json(session, f"{MLB_API}/draft/{year}/latest")).get("pick")
+    except Exception:
+        return None
+
+
+def pick_made(p: dict) -> bool:
+    return bool(p.get("isDrafted") and (p.get("person") or {}).get("fullName"))
+
+
+def round_name(label: str) -> str:
+    if label.isdigit():
+        return f"第 {label} 輪"
+    m = re.fullmatch(r"(\d+)C", label)
+    return f"第 {m.group(1)} 輪補償籤" if m else DRAFT_ROUND_ZH.get(label, label)
+
+
+def pick_line(p: dict) -> str:
+    person = p.get("person") or {}
+    pos = (person.get("primaryPosition") or {}).get("abbreviation", "")
+    school = (p.get("school") or {}).get("name", "")
+    extra = "｜".join(x for x in (POS_ZH.get(pos, pos), school) if x)
+    return (f"**#{p.get('pickNumber')}** {team_label(p.get('team') or {})}："
+            f"{person.get('fullName', '')}" + (f"｜{extra}" if extra else ""))
+
+
+def draft_embed(year: int, title: str, lines: list[str], color: int = 0x041E42,
+                url: str = "https://www.mlb.com/draft/tracker") -> discord.Embed:
+    embed = discord.Embed(title=title[:256], description="\n".join(lines)[:4000], color=color, url=url)
+    embed.set_footer(text=f"{year} MLB 選秀")
+    embed.timestamp = datetime.now(timezone.utc)
+    return embed
+
+
+def move_text(team_id: str, slot: int, before: list[str] | None) -> str:
+    if not before or team_id not in before:
+        return ""
+    was = before.index(team_id) + 1
+    return (f"⬆️ 上升 {was - slot} 名（原第 {was}）" if was > slot else
+            f"⬇️ 下滑 {slot - was} 名（原第 {was}）" if was < slot else "➖ 維持原順位")
+
+
+def order_lines(first_round: list[dict], before: list[str] | None) -> list[str]:
+    lines = []
+    for slot, p in enumerate(first_round, 1):
+        team = p.get("team") or {}
+        mark = "（抽籤）" if slot <= LOTTERY_DRAWN else ""
+        move = move_text(str(team.get("id")), slot, before) if slot <= LOTTERY_TEAMS else ""
+        lines.append(f"{'🏆 狀元' if slot == 1 else f'第 {slot} 順位'}{mark}：{team_label(team)}"
+                     + (f"　{move}" if move else ""))
+    return lines
+
+
+def lottery_reveal(year: int, first_round: list[dict], before: list[str] | None) -> list:
+    """樂透抽籤揭曉：抽出來的第 6 順位一隊一隊發到狀元，最後發第 1 輪完整順位"""
+    messages = []
+    for slot in range(LOTTERY_DRAWN, 0, -1):
+        team = first_round[slot - 1].get("team") or {}
+        if slot == 1:
+            content, title = "🏆 **MLB 狀元籤揭曉！**", f"{year} 狀元籤：{team_label(team)}"
+        else:
+            content, title = "🎰 **MLB 樂透抽籤**", f"第 {slot} 順位：{team_label(team)}"
+        messages.append((content, draft_embed(year, title, [move_text(str(team.get("id")), slot, before)],
+                                              0x7B1FA2, "https://www.mlb.com/draft/order")))
+    messages.append(("📋 **MLB 樂透抽籤結果與第 1 輪順位**", draft_embed(
+        year, f"{year} MLB 選秀第 1 輪順位", order_lines(first_round, before), 0x7B1FA2,
+        "https://www.mlb.com/draft/order")))
+    return messages
+
+
+def pick_message(year: int, label: str, p: dict) -> tuple[str, discord.Embed]:
+    """選秀：每選一位發一則"""
+    person = p.get("person") or {}
+    pos = (person.get("primaryPosition") or {}).get("abbreviation", "")
+    school, home = p.get("school") or {}, p.get("home") or {}
+    lines = [f"{round_name(label)}第 {p.get('roundPickNumber') or '?'} 順位"]
+    if pos:
+        lines.append(f"位置：{POS_ZH.get(pos, pos)}")
+    if school.get("name"):
+        lines.append(f"來自：{school['name']}" + (f"（{school['schoolClass']}）" if school.get("schoolClass") else ""))
+    if home.get("city"):
+        lines.append(f"家鄉：{', '.join(x for x in (home.get('city'), home.get('state'), home.get('country')) if x)}")
+    embed = draft_embed(year, f"第 {p.get('pickNumber')} 順位｜{team_label(p.get('team') or {})} 選中 "
+                              f"{person.get('fullName', '')}", lines)
+    if p.get("headshotLink"):
+        embed.set_thumbnail(url=p["headshotLink"])
+    return "⚾ **MLB 選秀**", embed
+
+
+def draft_picks_messages(year: int, picks: list[tuple[str, dict]], title: str, content: str) -> list:
+    """一則最多 35 位，太多就分成好幾則（後面的標題加「續」）"""
+    messages = []
+    for i in range(0, len(picks), 35):
+        chunk = picks[i:i + 35]
+        rounds = list(dict.fromkeys(round_name(r) for r, _ in chunk))
+        embed = discord.Embed(title=(title.format(rounds="、".join(rounds)) + ("（續）" if i else ""))[:256],
+                              description="\n".join(pick_line(p) for _, p in chunk)[:4000],
+                              color=0x041E42, url="https://www.mlb.com/draft/tracker")
+        embed.set_footer(text=f"{year} MLB 選秀")
+        embed.timestamp = datetime.now(timezone.utc)
+        messages.append((content, embed))
+    return messages
+
+
+async def draft_updates(session: aiohttp.ClientSession, state: dict, initial: bool) -> list:
+    """樂透抽籤一隊一隊揭曉 → 第 1 輪順位 → 選秀每選一位發一則（第一天）→ 選秀結果"""
+    year = draft_year()
+    d = state["draft"]
+    if d.get("year") != year:  # 換年度：重新開始記錄
+        d.clear()
+        d["year"] = year
+    messages = []
+    latest = await fetch_latest_pick(session, year)
+    drafting = latest is not None and pick_made(latest) and latest.get("pickNumber", 0) > d.get("last_pick", 0)
+
+    if not drafting:
+        # 選秀還沒開始：看第 1 輪順位有沒有出爐（MLB 抽籤後才公布順位）
+        if d.get("last_pick") or d.get("lottery_done"):
+            return []
+        if datetime.now(ET).month not in LOTTERY_MONTHS and time.time() - d.get("checked", 0) < 3600:
+            return []
+        d["checked"] = time.time()
+        first_round = [p for _, p in await fetch_draft_picks(session, year, round="1")]
+        ids = [str((p.get("team") or {}).get("id")) for p in first_round[:LOTTERY_TEAMS]]
+        if len(ids) < LOTTERY_TEAMS or "None" in ids:
+            return []
+        before = d.get("order")
+        reordered = bool(before) and sorted(before) == sorted(ids) and before != ids
+        d["order"] = ids
+        if reordered or (not before and datetime.now(ET).month in LOTTERY_MONTHS):
+            d["lottery_done"] = True
+            messages += lottery_reveal(year, first_round, before if reordered else None)
+        elif not before:  # 抽籤前就看到順位：先公布，之後順位重新排列時再發抽籤結果
+            messages.append(("📋 **MLB 選秀順位公布（樂透抽籤前）**", draft_embed(
+                year, f"{year} MLB 選秀第 1 輪順位", order_lines(first_round, None))))
+        return [] if initial else messages
+
+    # 選秀進行中：抓完整名單
+    picks = await fetch_draft_picks(session, year)
+    labels = list(dict.fromkeys(r for r, _ in picks))
+    live = set(labels[:labels.index("3")] if "3" in labels else labels)  # 第一天：第 3 輪之前
+    last = d.get("last_pick", 0)
+    new = [(r, p) for r, p in picks if pick_made(p) and p.get("pickNumber", 0) > last]
+    d["last_pick"] = max([last] + [p.get("pickNumber", 0) for _, p in picks if pick_made(p)])
+    d["lottery_done"] = True
+    if new:
+        d["live_until"] = time.time() + DRAFT_LIVE_SECONDS
+    # 第一天（第 1、2 輪和補償籤）每選一位發一則；第 3 輪以後人很多，每次檢查合併成一則
+    messages += [pick_message(year, r, p) for r, p in new if r in live]
+    messages += draft_picks_messages(year, [(r, p) for r, p in new if r not in live],
+                                     f"{year} MLB 選秀｜{{rounds}}", "⚾ **MLB 選秀進行中**")
+
+    if not d.get("finished") and picks and all(pick_made(p) or p.get("isPass") for _, p in picks):
+        d["finished"] = True
+        day_one = [(r, p) for r, p in picks if r in live and pick_made(p)]
+        messages += draft_picks_messages(year, day_one, f"{year} MLB 選秀結果｜{{rounds}}",
+                                         f"📋 **{year} MLB 選秀結果**")
+        messages.append(("🏁 **MLB 選秀結束**", draft_embed(
+            year, f"{year} MLB 選秀結束",
+            [f"共 {sum(pick_made(p) for _, p in picks)} 位球員被選中，上面是第 1、2 輪和補償籤名單",
+             "👉 點上方標題查看全部 20 輪名單"])))
+    return [] if initial else messages
+
+
 async def collect_updates(session: aiohttp.ClientSession) -> tuple[list, dict]:
     """回傳 (要發送的 [(文字, embed)], 更新後的狀態)；呼叫端發完訊息後要 save_state"""
     state = load_state() or {}
@@ -996,7 +1182,8 @@ async def collect_updates(session: aiohttp.ClientSession) -> tuple[list, dict]:
                                     ("tx", "異動", tx_updates, []),
                                     ("news", "新聞", news_updates, []),
                                     ("awards", "獎項", award_updates, []),
-                                    ("honors", "每週/每月獎項", honor_updates, [])):
+                                    ("honors", "每週/每月獎項", honor_updates, []),
+                                    ("draft", "選秀", draft_updates, {})):
         # 第一次抓到某個來源時只記錄現有資料，不發文，避免洗版
         initial = key not in state
         state.setdefault(key, empty)
