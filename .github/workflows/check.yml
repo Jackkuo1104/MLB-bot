@@ -2,8 +2,8 @@ name: Check MLB updates
 
 on:
   schedule:
-    - cron: "*/5 * * * *"  # 每 5 分鐘（GitHub 排程常會延遲幾分鐘到幾十分鐘，比分不會很即時）
-  workflow_dispatch:         # 可在 Actions 頁面手動執行
+    - cron: "*/5 * * * *"  # 備援：GitHub 排程常延遲到 30 分鐘以上，主要靠 cron-job.org 每 5 分鐘觸發
+  workflow_dispatch:         # 可在 Actions 頁面手動執行，cron-job.org 也是用這個觸發
 
 permissions:
   contents: write            # 需要把 state.json 存回 repo
@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: main                # 抓執行當下最新的 state.json（排隊等候的執行才不會用到舊紀錄而重複發文）
 
       - uses: actions/setup-python@v6
         with:
