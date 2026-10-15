@@ -12,15 +12,15 @@
       "scored": null
     },
     "849818": {
-      "abstract": "Preview",
-      "status": "Pre-Game",
+      "abstract": "Live",
+      "status": "Warmup",
       "innings": 0,
       "score": [
         0,
         0
       ],
       "started": false,
-      "scored": null
+      "scored": 0
     },
     "849810": {
       "abstract": "Preview",
@@ -311,14 +311,9 @@
   "honors_checked": 1792081837.7542574,
   "draft": {
     "year": 2027,
-    "checked": 1792079138.6060352
+    "checked": 1792083031.735099
   },
-  "health": {
-    "中文翻譯": {
-      "since": 1792072851.7833636,
-      "error": "Google 翻譯的請求全部失敗，訊息會先顯示英文"
-    }
-  },
+  "health": {},
   "season": {
     "opened": 2026,
     "playoffs": 2026,
