@@ -13,7 +13,7 @@
     },
     "849818": {
       "abstract": "Preview",
-      "status": "Scheduled",
+      "status": "Pre-Game",
       "innings": 0,
       "score": [
         0,
@@ -313,7 +313,12 @@
     "year": 2027,
     "checked": 1792071931.1075487
   },
-  "health": {},
+  "health": {
+    "中文翻譯": {
+      "since": 1792072851.7833636,
+      "error": "Google 翻譯的請求全部失敗，訊息會先顯示英文"
+    }
+  },
   "season": {
     "opened": 2026,
     "playoffs": 2026,
