@@ -23,15 +23,15 @@
       "scored": 3
     },
     "849810": {
-      "abstract": "Preview",
-      "status": "Pre-Game",
+      "abstract": "Live",
+      "status": "Warmup",
       "innings": 0,
       "score": [
         0,
         0
       ],
       "started": false,
-      "scored": null
+      "scored": 0
     }
   },
   "days_done": [],
