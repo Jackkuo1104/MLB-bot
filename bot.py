@@ -837,6 +837,73 @@ def day_done_updates(games: list[dict], state: dict, initial: bool) -> list:
     return messages
 
 
+def is_title_clincher(game: dict) -> bool:
+    """世界大賽打完的那一場"""
+    return (game.get("gameType") == "W" and game.get("status", {}).get("abstractGameState") == "Final"
+            and bool((game.get("seriesStatus") or {}).get("isOver")))
+
+
+def season_open_message(season: int, games: list[dict]) -> tuple[str, discord.Embed]:
+    lines = ["例行賽正式開打！今天的比賽："]
+    lines += [f"• {team_label(g['teams']['away']['team'])} @ {team_label(g['teams']['home']['team'])}"
+              for g in games]
+    embed = discord.Embed(title=f"MLB {season} 球季開幕", url="https://www.mlb.com/schedule",
+                          description="\n".join(lines)[:4000], color=0x041E42)
+    embed.set_footer(text="MLB")
+    embed.timestamp = datetime.now(timezone.utc)
+    return "🎉 **MLB 開季**", embed
+
+
+def season_end_message(season: int, game: dict) -> tuple[str, discord.Embed]:
+    s = game.get("seriesStatus") or {}
+    winner, loser = s.get("winningTeam") or {}, s.get("losingTeam") or {}
+    result = re.search(r"(\d+)-(\d+)", s.get("result", ""))
+    series = f" {result[1]}-{result[2]}" if result else ""
+    lines = [f"🏆 **{team_label(winner)}** 在世界大賽以{series} 擊敗 {team_label(loser)}，"
+             f"拿下 {season} 年世界大賽冠軍！",
+             "", "MLB 正式進入休賽季，接下來是年度獎項、自由球員市場和冬季會議。"]
+    embed = discord.Embed(title=f"MLB {season} 球季結束", url=game_url(game),
+                          description="\n".join(lines), color=0xFFB81C)
+    embed.set_footer(text="MLB")
+    embed.timestamp = datetime.now(timezone.utc)
+    return "🏖️ **MLB 休賽季開始**", embed
+
+
+async def season_updates(session: aiohttp.ClientSession, games: list[dict], state: dict,
+                         initial: bool) -> list:
+    """例行賽第一場開打時發「開季」，世界大賽打完時發「休賽季開始」"""
+    first_time = "season" not in state
+    s = state.setdefault("season", {})
+    if first_time:  # 第一次執行：已經開打的球季當作發過了，避免季中才裝就發開季
+        today = datetime.now(ET).date()
+        try:
+            data = await get_json(session, f"{MLB_API}/seasons/{today.year}", {"sportId": "1"})
+        except Exception as e:  # 不影響這次的比分訊息，下次再試
+            print(f"⚠️ 抓取球季日期失敗：{e}")
+            del state["season"]
+            return []
+        start = ((data.get("seasons") or [{}])[0]).get("regularSeasonStartDate", "9999")
+        if str(today) >= start:
+            s["opened"] = today.year
+    messages = []
+    opening = [g for g in games if g.get("gameType") == "R"
+               and g.get("status", {}).get("abstractGameState") in ("Live", "Final")]
+    year = int(opening[0].get("season") or 0) if opening else 0
+    if year > s.get("opened", 0):
+        s["opened"] = year
+        if not (initial or first_time):
+            day = opening[0].get("officialDate")
+            messages.append(season_open_message(year, [g for g in games if g.get("gameType") == "R"
+                                                       and g.get("officialDate") == day]))
+    for game in games:
+        year = int(game.get("season") or 0)
+        if is_title_clincher(game) and year > s.get("closed", 0):
+            s["closed"] = year
+            if not (initial or first_time):
+                messages.append(season_end_message(year, game))
+    return messages
+
+
 # ===== 比對新舊資料，產生要發送的訊息 =====
 async def game_updates(session: aiohttp.ClientSession, state: dict, initial: bool) -> list:
     games = await fetch_games(session)
@@ -903,7 +970,7 @@ async def game_updates(session: aiohttp.ClientSession, state: dict, initial: boo
             messages.append(scoring_alert(game, fresh))
         cur["scored"] = len(plays)
     state["games"] = new_games
-    return messages
+    return messages + await season_updates(session, games, state, initial)
 
 
 async def tx_updates(session: aiohttp.ClientSession, state: dict, initial: bool) -> list:
