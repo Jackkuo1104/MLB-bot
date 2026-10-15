@@ -4,6 +4,7 @@ MLB 即時比分（每局摘要）/ 勝負結果 / 簽約交易 / 年度獎項 /
 球隊、獎項清單都從 API 動態取得，球隊搬遷改名、新增獎項都不用改程式
 """
 
+import io
 import os
 import re
 import json
@@ -17,6 +18,11 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
+
+try:  # 畫季後賽對戰圖用（需要 Pillow）；沒裝的話季後賽戰果只發文字
+    import bracket
+except ImportError:
+    bracket = None
 
 # ===== 設定 =====
 load_dotenv()
@@ -843,15 +849,31 @@ def is_title_clincher(game: dict) -> bool:
             and bool((game.get("seriesStatus") or {}).get("isOver")))
 
 
-def season_open_message(season: int, games: list[dict]) -> tuple[str, discord.Embed]:
-    lines = ["例行賽正式開打！今天的比賽："]
+POSTSEASON_TYPES = {"F", "D", "L", "W"}  # 外卡賽、分區系列賽、聯盟冠軍賽、世界大賽
+SEASON_STATE_VERSION = 3  #球季狀態加了新項目時調高，舊狀態會重新初始化一次（不發文）
+
+
+def season_start_message(content: str, title: str, intro: str, games: list[dict],
+                         color: int) -> tuple[str, discord.Embed]:
+    lines = [f"{intro}今天的比賽："]
     lines += [f"• {team_label(g['teams']['away']['team'])} @ {team_label(g['teams']['home']['team'])}"
               for g in games]
-    embed = discord.Embed(title=f"MLB {season} 球季開幕", url="https://www.mlb.com/schedule",
-                          description="\n".join(lines)[:4000], color=0x041E42)
+    embed = discord.Embed(title=title, url="https://www.mlb.com/schedule",
+                          description="\n".join(lines)[:4000], color=color)
     embed.set_footer(text="MLB")
     embed.timestamp = datetime.now(timezone.utc)
-    return "🎉 **MLB 開季**", embed
+    return content, embed
+
+
+def first_started(games: list[dict], types: set[str]) -> tuple[int, list[dict]]:
+    """這幾種賽事裡已經開打的第一天：回傳 (球季年份, 那天這幾種賽事的所有比賽)"""
+    started = [g for g in games if g.get("gameType") in types
+               and g.get("status", {}).get("abstractGameState") in ("Live", "Final")]
+    if not started:
+        return 0, []
+    day = started[0].get("officialDate")
+    return (int(started[0].get("season") or 0),
+            [g for g in games if g.get("officialDate") == day and g.get("gameType") in types])
 
 
 def season_end_message(season: int, game: dict) -> tuple[str, discord.Embed]:
@@ -869,39 +891,269 @@ def season_end_message(season: int, game: dict) -> tuple[str, discord.Embed]:
     return "🏖️ **MLB 休賽季開始**", embed
 
 
+REG_END_MONTHS = (9, 10)  # 例行賽在 9 月底打完；這幾個月才檢查是不是最後一天
+REG_END_CHECK_SECONDS = 30 * 60
+PLAYOFF_DAY_DELAY = 10 * 60  # 當天比賽全部打完後，等 10 分鐘再發戰果
+LEAGUE_ZH = {103: "美聯", 104: "國聯"}
+DIVISION_ZH = {200: "西區", 201: "東區", 202: "中區", 203: "西區", 204: "東區", 205: "中區"}
+BRACKET_LAYOUT = {  # 系列賽編號 → 對戰圖位置（每年固定）；外卡 F_2 的勝隊打 D_1，F_1 打 D_2，以此類推
+    103: [["F_2", "F_1"], ["D_1", "D_2"], ["L_1"]],
+    104: [["F_4", "F_3"], ["D_3", "D_4"], ["L_2"]],
+}
+
+
+async def regular_season_over(session: aiohttp.ClientSession, date: str) -> bool:
+    """這天之後兩週都沒有還沒打的例行賽"""
+    end = datetime.strptime(date, "%Y-%m-%d").date() + timedelta(days=14)
+    data = await get_json(session, f"{MLB_API}/schedule", {
+        "sportId": "1", "gameType": "R", "startDate": date, "endDate": str(end)})
+    return not [g for d in data.get("dates", []) for g in d.get("games", [])
+                if g.get("status", {}).get("abstractGameState") != "Final" and not is_called_off(g)]
+
+
+async def fetch_standings(session: aiohttp.ClientSession, season: int) -> dict:
+    """{聯盟 ID: {"divisions": [(分區 ID, [球隊戰績...])], "seeds": [(種子, 戰績, 怎麼晉級)]}}"""
+    data = await get_json(session, f"{MLB_API}/standings", {
+        "leagueId": "103,104", "season": str(season), "standingsTypes": "regularSeason"})
+    leagues: dict = {}
+    for rec in data.get("records") or []:
+        league = (rec.get("league") or {}).get("id")
+        teams = sorted(rec.get("teamRecords") or [], key=lambda t: int(t.get("divisionRank") or 99))
+        leagues.setdefault(league, {"divisions": [], "seeds": []})["divisions"].append(
+            ((rec.get("division") or {}).get("id"), teams))
+    for league, info in leagues.items():
+        teams = [t for _, ts in info["divisions"] for t in ts]
+        # 分區冠軍看分區排名第 1（API 的 divisionChamp 欄位偶爾會標錯）
+        champs = sorted((t for t in teams if str(t.get("divisionRank")) == "1"),
+                        key=lambda t: int(t.get("leagueRank") or 99))
+        wild = sorted((t for t in teams if t not in champs and int(t.get("wildCardRank") or 99) <= 3),
+                      key=lambda t: int(t.get("wildCardRank") or 99))
+        div_of = {t["team"]["id"]: d for d, ts in info["divisions"] for t in ts}
+        info["seeds"] = ([(n + 1, t, f"{DIVISION_ZH.get(div_of[t['team']['id']], '')}冠軍") for n, t in enumerate(champs)]
+                         + [(n + 1 + len(champs), t, "外卡") for n, t in enumerate(wild)])
+    return leagues
+
+
+def standings_message(season: int, leagues: dict) -> tuple[str, discord.Embed]:
+    lines = ["例行賽全部打完！"]
+    for league in (103, 104):
+        info = leagues.get(league)
+        if not info:
+            continue
+        lines += ["", f"**{LEAGUE_ZH[league]}季後賽名單**"]
+        for seed, t, how in info["seeds"]:
+            lines.append(f"{seed}. {team_label(t['team'])}　{t['wins']}-{t['losses']}（{how}）")
+        seeded = {t["team"]["id"] for _, t, _ in info["seeds"]}
+        for div, teams in sorted(info["divisions"], key=lambda d: "東中西".find(DIVISION_ZH.get(d[0], "  ")[0])):
+            lines.append(f"{LEAGUE_ZH[league]}{DIVISION_ZH.get(div, '')}：" + "、".join(
+                f"{team_name(t['team']['id'])} {t['wins']}-{t['losses']}{' ✅' if t['team']['id'] in seeded else ''}"
+                for t in teams))
+    embed = discord.Embed(title=f"MLB {season} 例行賽結束", url="https://www.mlb.com/standings",
+                          description="\n".join(lines)[:4000], color=0x041E42)
+    embed.set_footer(text="MLB")
+    embed.timestamp = datetime.now(timezone.utc)
+    return "🏁 **MLB 例行賽結束**", embed
+
+
+# ----- 季後賽每天的戰果和對戰圖 -----
+def series_name(desc: str) -> str:
+    """'AL Championship Series' → '美聯冠軍賽'"""
+    for en, zh_name in (("Wild Card Series", "外卡系列賽"), ("Division Series", "分區系列賽"),
+                        ("Championship Series", "冠軍賽"), ("World Series", "世界大賽")):
+        if en in desc:
+            prefix = "美聯" if desc.startswith("AL") else "國聯" if desc.startswith("NL") else ""
+            return prefix + zh_name
+    return desc
+
+
+def series_caption(names: list[str], wins: list[int], need: int, final: bool) -> str:
+    """兩隊的中文隊名、勝場 → 「道奇 晉級 3-1」「道奇 領先 2-1」「系列賽 1-1 平手」"""
+    lead = 0 if wins[0] >= wins[1] else 1
+    w, l = wins[lead], wins[1 - lead]
+    if w >= need:
+        return f"{names[lead]} {'奪冠' if final else '晉級'} {w}-{l}"
+    if w == l:
+        return "尚未開打" if w == 0 else f"系列賽 {w}-{l} 平手"
+    return f"{names[lead]} 領先 {w}-{l}"
+
+
+def game_series_text(game: dict) -> str:
+    """seriesStatus 的 'SEA wins 3-2'、'LAD leads 2-1'、'Series tied 1-1' → 中文"""
+    result = (game.get("seriesStatus") or {}).get("result", "")
+    m = re.match(r"(\w+) (wins|leads) (\d+)-(\d+)", result)
+    if m:
+        name = next((n for a, n in mlb_teams.values() if a == m[1]), m[1])
+        verb = ("奪冠" if game.get("gameType") == "W" else "晉級") if m[2] == "wins" else "領先"
+        return f"{name} {verb} {m[3]}-{m[4]}"
+    m = re.match(r"Series tied (\d+)-(\d+)", result)
+    return f"系列賽 {m[1]}-{m[2]} 平手" if m else result
+
+
+async def bracket_image(session: aiohttp.ClientSession, season: int, date: str) -> bytes:
+    data = await get_json(session, f"{MLB_API}/schedule/postseason/series",
+                          {"season": str(season), "sportId": "1"})
+    standings = await fetch_standings(session, season)
+    seed = {t["team"]["id"]: n for info in standings.values() for n, t, _ in info["seeds"]}
+    league_of = {t["team"]["id"]: lg for lg, info in standings.items() for _, ts in info["divisions"] for t in ts}
+    series = {}
+    for sr in data.get("series") or []:
+        games = sr.get("games") or []
+        if not games:
+            continue
+        sides = games[0].get("teams") or {}
+        ids = [(sides.get(k) or {}).get("team", {}).get("id") for k in ("away", "home")]
+        ids = [i if i in mlb_teams else None for i in ids]  # AL Champion 這類預留名稱 → 待定
+        wins = [0, 0]
+        for g in games:
+            if g.get("status", {}).get("abstractGameState") != "Final":
+                continue
+            for side in (g.get("teams") or {}).values():
+                tid = (side.get("team") or {}).get("id")
+                if side.get("isWinner") and tid in ids:
+                    wins[ids.index(tid)] += 1
+        series[(sr.get("series") or {}).get("id")] = {
+            "ids": ids, "wins": wins, "need": (games[0].get("gamesInSeries") or 7) // 2 + 1}
+    teams = {i for s in series.values() for i in s["ids"] if i}
+    logos = await bracket.fetch_logos(session, {i: f"https://midfield.mlbstatic.com/v1/team/{i}/spots/128"
+                                                for i in teams})
+    font = await bracket.ensure_font(session)
+
+    def box(sid: str, final: bool = False) -> bracket.Box:
+        s = series.get(sid)
+        if not s:
+            return bracket.Box()
+        order = sorted(range(2), key=lambda n: seed.get(s["ids"][n], 99))
+        if final:  # 世界大賽：美聯冠軍在上
+            order = sorted(range(2), key=lambda n: league_of.get(s["ids"][n]) != 103)
+        w = next((n for n in range(2) if s["wins"][n] >= s["need"]), None)
+        started = any(s["wins"])
+        out = [bracket.Team(mlb_teams[s["ids"][n]][0] if s["ids"][n] else "", logos.get(s["ids"][n]),
+                            None if final else seed.get(s["ids"][n]),
+                            s["wins"][n] if started or all(s["ids"]) else None,
+                            won=n == w, lost=w is not None and n != w) for n in order]
+        caption = (series_caption([team_name(s["ids"][n]) for n in order], [s["wins"][n] for n in order],
+                                  s["need"], final) if all(s["ids"]) else "")
+        return bracket.Box(out, caption)
+
+    left = [[box(i) for i in rnd] for rnd in BRACKET_LAYOUT[103]]
+    right = [[box(i) for i in rnd] for rnd in BRACKET_LAYOUT[104]]
+    return bracket.render(font, f"MLB {season} 季後賽", f"更新至 {date}（美東時間）",
+                          ("美聯", "國聯", "世界大賽"), left, right, box("W_1", final=True), (4, 30, 66))
+
+
+async def playoff_day_message(session: aiohttp.ClientSession, date: str, games: list[dict]) -> tuple:
+    lines = []
+    for g in games:
+        away, home = g["teams"]["away"], g["teams"]["home"]
+        lines.append(f"**{series_name(g.get('seriesDescription', ''))} 第 {g.get('seriesGameNumber', '?')} 戰**")
+        if is_called_off(g):
+            lines.append(f"{team_label(away['team'])} @ {team_label(home['team'])}："
+                         f"{zh(g.get('status', {}).get('detailedState', ''))}")
+            continue
+        series = game_series_text(g)
+        lines.append(f"{team_label(away['team'])} **{away.get('score', 0)} : {home.get('score', 0)}** "
+                     f"{team_label(home['team'])}" + (f"\n　└ {series}" if series else ""))
+    embed = discord.Embed(title=f"MLB 季後賽戰果｜{date}", url=f"https://www.mlb.com/scores/{date}",
+                          description="\n".join(lines)[:4000], color=0xC8102E)
+    embed.set_footer(text="MLB")
+    embed.timestamp = datetime.now(timezone.utc)
+    content = "📋 **今日 MLB 季後賽全部結束**"
+    if bracket:
+        try:
+            png = await bracket_image(session, int(games[0].get("season") or 0), date)
+            embed.set_image(url="attachment://bracket.png")
+            return content, embed, png
+        except Exception as e:
+            print(f"⚠️ 畫季後賽對戰圖失敗：{e}")
+    return content, embed
+
+
+async def playoff_day_updates(session: aiohttp.ClientSession, games: list[dict], s: dict, quiet: bool) -> list:
+    """季後賽的日子，當天比賽全部結束後發一則戰果，附上對戰圖"""
+    done = s.setdefault("post_days", [])
+    by_date: dict[str, list[dict]] = {}
+    for g in games:
+        if g.get("gameType") in POSTSEASON_TYPES:
+            by_date.setdefault(g.get("officialDate", ""), []).append(g)
+    messages = []
+    for date, day_games in sorted(by_date.items()):
+        if date in done or not all(g.get("status", {}).get("abstractGameState") == "Final" or is_called_off(g)
+                                   for g in day_games):
+            continue
+        ready = s.setdefault("post_ready", {}).setdefault(date, time.time())  # 第一次看到全部打完的時間
+        if not quiet and time.time() - ready < PLAYOFF_DAY_DELAY:
+            continue
+        done.append(date)
+        if not quiet:
+            messages.append(await playoff_day_message(session, date, day_games))
+    s["post_days"] = done[-10:]
+    s["post_ready"] = {d: t for d, t in s.get("post_ready", {}).items() if d not in done}
+    return messages
+
+
 async def season_updates(session: aiohttp.ClientSession, games: list[dict], state: dict,
-                         initial: bool) -> list:
-    """例行賽第一場開打時發「開季」，世界大賽打完時發「休賽季開始」"""
-    first_time = "season" not in state
+                         initial: bool) -> tuple[list, list]:
+    """例行賽第一場開打發「開季」、最後一天打完發「例行賽結束」和最終排名，季後賽（外卡賽）第一場開打發
+    「季後賽開打」、每天打完發戰果和對戰圖，世界大賽打完發「休賽季開始」
+    回傳 (要排在比賽訊息前面的, 要排在後面的)"""
     s = state.setdefault("season", {})
-    if first_time:  # 第一次執行：已經開打的球季當作發過了，避免季中才裝就發開季
+    first_time = s.get("v") != SEASON_STATE_VERSION
+    if first_time:  # 第一次執行（或舊版升級）：已經開打的球季、季後賽當作發過了，避免季中才裝就發
         today = datetime.now(ET).date()
         try:
             data = await get_json(session, f"{MLB_API}/seasons/{today.year}", {"sportId": "1"})
         except Exception as e:  # 不影響這次的比分訊息，下次再試
             print(f"⚠️ 抓取球季日期失敗：{e}")
-            del state["season"]
-            return []
-        start = ((data.get("seasons") or [{}])[0]).get("regularSeasonStartDate", "9999")
-        if str(today) >= start:
-            s["opened"] = today.year
-    messages = []
-    opening = [g for g in games if g.get("gameType") == "R"
-               and g.get("status", {}).get("abstractGameState") in ("Live", "Final")]
-    year = int(opening[0].get("season") or 0) if opening else 0
+            return [], []
+        dates = (data.get("seasons") or [{}])[0]
+        if str(today) >= dates.get("regularSeasonStartDate", "9999"):
+            s["opened"] = max(s.get("opened", 0), today.year)
+        if str(today) >= dates.get("postSeasonStartDate", "9999"):
+            s["playoffs"] = s["reg_end"] = today.year
+        s["v"] = SEASON_STATE_VERSION
+    quiet = initial or first_time
+    before, after = [], []
+    year, today_games = first_started(games, {"R"})
     if year > s.get("opened", 0):
         s["opened"] = year
-        if not (initial or first_time):
-            day = opening[0].get("officialDate")
-            messages.append(season_open_message(year, [g for g in games if g.get("gameType") == "R"
-                                                       and g.get("officialDate") == day]))
+        if not quiet:
+            before.append(season_start_message("🎉 **MLB 開季**", f"MLB {year} 球季開幕",
+                                               "例行賽正式開打！", today_games, 0x041E42))
+    year, today_games = first_started(games, POSTSEASON_TYPES)
+    if year > s.get("playoffs", 0):
+        s["playoffs"] = year
+        s["opened"] = max(s.get("opened", 0), year)
+        if not quiet:
+            before.append(season_start_message("🔥 **MLB 季後賽開打**", f"MLB {year} 季後賽開打",
+                                               "外卡賽開打，季後賽正式開始！", today_games, 0xC8102E))
+    # 例行賽最後一天：當天的例行賽都打完，之後兩週也沒有例行賽（延賽補賽也打完了）
+    regular = [g for g in games if g.get("gameType") == "R"]
+    last = max((g.get("officialDate", "") for g in regular), default="")
+    last_day = [g for g in regular if g.get("officialDate") == last]
+    year = int(last_day[0].get("season") or 0) if last_day else 0
+    if (year > s.get("reg_end", 0) and datetime.now(ET).month in REG_END_MONTHS
+            and all(g.get("status", {}).get("abstractGameState") == "Final" or is_called_off(g) for g in last_day)
+            and time.time() - s.get("reg_checked", 0) >= REG_END_CHECK_SECONDS):
+        s["reg_checked"] = time.time()
+        try:
+            standings = await fetch_standings(session, year) if await regular_season_over(session, last) else None
+        except Exception as e:
+            print(f"⚠️ 檢查例行賽是否結束失敗：{e}")
+            standings = None
+        if standings:
+            s["reg_end"] = year
+            if not quiet:
+                after.append(standings_message(year, standings))
+    after += await playoff_day_updates(session, games, s, quiet)
     for game in games:
         year = int(game.get("season") or 0)
-        if is_title_clincher(game) and year > s.get("closed", 0):
+        # 等當天的季後賽戰果發出後，才接著發休賽季開始
+        if (is_title_clincher(game) and year > s.get("closed", 0)
+                and game.get("officialDate") in s["post_days"]):
             s["closed"] = year
-            if not (initial or first_time):
-                messages.append(season_end_message(year, game))
-    return messages
+            if not quiet:
+                after.append(season_end_message(year, game))
+    return before, after
 
 
 # ===== 比對新舊資料，產生要發送的訊息 =====
@@ -970,7 +1222,8 @@ async def game_updates(session: aiohttp.ClientSession, state: dict, initial: boo
             messages.append(scoring_alert(game, fresh))
         cur["scored"] = len(plays)
     state["games"] = new_games
-    return messages + await season_updates(session, games, state, initial)
+    before, after = await season_updates(session, games, state, initial)
+    return before + messages + after
 
 
 async def tx_updates(session: aiohttp.ClientSession, state: dict, initial: bool) -> list:
@@ -1343,9 +1596,10 @@ class MLBBot(discord.Client):
         if messages and channel is None:
             print("⚠️ 找不到頻道，請確認 CHANNEL_ID 和機器人權限")
         elif channel is not None:
-            for content, embed in messages:
+            for content, embed, *image in messages:  # 有些訊息附一張圖（季後賽對戰圖）
                 try:
-                    await channel.send(content=content, embed=embed)
+                    files = [discord.File(io.BytesIO(image[0]), "bracket.png")] if image else []
+                    await channel.send(content=content, embed=embed, files=files)
                     print(f"已發送：{content} {embed.title}")
                 except discord.HTTPException as e:
                     print(f"⚠️ 發送失敗：{e}")

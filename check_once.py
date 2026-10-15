@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import json
 import time
 
 import aiohttp
@@ -16,13 +17,21 @@ LIVE_SECONDS = 150  # 選秀進行中：這次執行再多檢查 2.5 分鐘（Gi
 LIVE_INTERVAL = 20  # 每 20 秒檢查一次
 
 
-async def send_message(session: aiohttp.ClientSession, content: str, embed: discord.Embed) -> None:
+async def send_message(session: aiohttp.ClientSession, content: str, embed: discord.Embed,
+                       image: bytes | None = None) -> None:
     url = f"{DISCORD_API}/channels/{CHANNEL_ID}/messages"
     headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
     payload = {"content": content, "embeds": [embed.to_dict()]}
     for _ in range(3):
-        async with session.post(url, headers=headers, json=payload,
-                                timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        if image:  # 附圖片（季後賽對戰圖）要用 multipart 上傳
+            form = aiohttp.FormData()
+            form.add_field("payload_json", json.dumps(payload), content_type="application/json")
+            form.add_field("files[0]", image, filename="bracket.png", content_type="image/png")
+            body = {"data": form}
+        else:
+            body = {"json": payload}
+        async with session.post(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30),
+                                **body) as resp:
             if resp.status == 429:  # 被 Discord 限速，等一下再試
                 await asyncio.sleep((await resp.json()).get("retry_after", 5))
                 continue
@@ -41,9 +50,16 @@ async def main() -> None:
         while True:
             messages, state = await collect_updates(session)
             sent = 0
-            for content, embed in messages:
+            for content, embed, *image in messages:
                 try:
-                    await send_message(session, content, embed)
+                    try:
+                        await send_message(session, content, embed, image[0] if image else None)
+                    except Exception as e:
+                        if not image:
+                            raise
+                        print(f"⚠️ 附圖發送失敗，改發不附圖：{e}")
+                        embed.set_image(url=None)
+                        await send_message(session, content, embed)
                     sent += 1
                     print(f"已發送：{content} {embed.title}")
                 except Exception as e:

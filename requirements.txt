@@ -2,3 +2,4 @@ discord.py>=2.3,<3
 aiohttp>=3.9,<4
 python-dotenv>=1.0,<2
 tzdata  # Windows 沒有內建時區資料，美東夏令/冬令時間需要它
+Pillow>=10,<13  # 畫季後賽對戰圖
