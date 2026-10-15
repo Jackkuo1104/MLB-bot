@@ -4,19 +4,34 @@
       "abstract": "Final",
       "status": "Final",
       "innings": 9,
-      "started": true
+      "score": [
+        6,
+        2
+      ],
+      "started": true,
+      "scored": null
     },
     "849818": {
       "abstract": "Preview",
       "status": "Scheduled",
       "innings": 0,
-      "started": false
+      "score": [
+        0,
+        0
+      ],
+      "started": false,
+      "scored": null
     },
     "849810": {
       "abstract": "Preview",
       "status": "Scheduled",
       "innings": 0,
-      "started": false
+      "score": [
+        0,
+        0
+      ],
+      "started": false,
+      "scored": null
     }
   },
   "days_done": [],
@@ -45,7 +60,8 @@
     "50182001",
     "50182409",
     "50184640",
-    "50185126"
+    "50185126",
+    "50186797"
   ],
   "awards": [
     "MLBHOF:2026:116999:137:Contemporary Era Ballot Selection",
@@ -160,7 +176,7 @@
     "WBCTT:2026:701350:940:",
     "WBCTT:2026:660271:843:"
   ],
-  "awards_checked": 1792033502.9858522,
+  "awards_checked": 1792035326.1787887,
   "honors": [
     "ALPOM:2026:695600:118::2026-09-27",
     "ALPOM:2026:695506:118::2026-08-31",
