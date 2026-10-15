@@ -1,5 +1,5 @@
 """
-MLB 即時比分 / 勝負結果 / 簽約交易 / 年度獎項 / 重大新聞 → Discord 機器人
+MLB 即時比分（每局摘要）/ 勝負結果 / 簽約交易 / 年度獎項 / 每週每月最佳 / 重大新聞 / 紀錄 → Discord 機器人
 資料來源：MLB Stats API（比分、球員異動、獎項）、ESPN MLB 新聞 API（皆免費，不需要金鑰）
 球隊、獎項清單都從 API 動態取得，球隊搬遷改名、新增獎項都不用改程式
 """
@@ -37,6 +37,9 @@ AWARD_CHECK_MINUTES = float(os.getenv("AWARD_CHECK_MINUTES", "30"))
 
 MLB_API = "https://statsapi.mlb.com/api/v1"
 ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/news"
+# 標題或摘要符合這些字的新聞當作「紀錄」消息發送（不限 NEWS_TYPES）
+RECORD_NEWS = re.compile(r"\brecords?\b|record-breaking|all-time|first player|"
+                         r"MLB history|major league history|franchise history", re.I)
 STATE_FILE = "state.json"
 SEEN_LIMIT = 500  # 只保留最近的 ID，避免檔案無限變大
 TW = timezone(timedelta(hours=8))
@@ -58,9 +61,14 @@ ALL_STAR_TEAMS = {159: ("AL", "美聯明星隊"), 160: ("NL", "國聯明星隊")
 mlb_teams: dict[int, tuple[str, str]] = dict(TEAMS)
 _teams_loaded_at = 0.0
 
-# 收錄的獎項：大聯盟層級（含美聯 103、國聯 104）和世界棒球經典賽 160，排除每週/每月獎
+# 收錄的獎項：大聯盟層級（含美聯 103、國聯 104）和世界棒球經典賽 160
 AWARD_LEAGUES = {103, 104, 160}
-AWARD_EXCLUDE = re.compile(r"\b(Week|Month)\b", re.I)
+# 每週 / 每月獎項另外處理：同一人可能連續得獎，用公布日期區分，美聯國聯合併成一則
+PERIODIC_AWARD = re.compile(r"\b(Week|Month)\b", re.I)
+PERIODIC_ZH = {  # 獎項 ID 去掉 AL/NL 開頭 → 中文名稱；不在這裡的顯示英文名稱
+    "POW": "本週最佳球員", "POM": "本月最佳球員", "PITOM": "本月最佳投手",
+    "ROM": "本月最佳新秀", "RRELMON": "本月最佳救援投手", "MLBPLAYOW": "本週最佳美技",
+}
 AWARD_ZH = {
     "ALMVP": "美聯 MVP", "NLMVP": "國聯 MVP", "ALCY": "美聯賽揚獎", "NLCY": "國聯賽揚獎",
     "ALROY": "美聯新人王", "NLROY": "國聯新人王", "ALMOY": "美聯年度最佳總教練",
@@ -106,7 +114,7 @@ def load_state() -> dict | None:
 
 
 def save_state(state: dict) -> None:
-    for key in ("tx", "news"):
+    for key in ("tx", "news", "honors"):
         if key in state:
             state[key] = state[key][-SEEN_LIMIT:]
     with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -178,7 +186,7 @@ async def fetch_award_defs(session: aiohttp.ClientSession) -> list[dict]:
         data = await get_json(session, f"{MLB_API}/awards")
         _award_defs = [
             a for a in data.get("awards", [])
-            if a.get("active") and not AWARD_EXCLUDE.search(a.get("name", ""))
+            if a.get("active")
             and (a.get("sport", {}).get("id") == 1 or a.get("league", {}).get("id") in AWARD_LEAGUES)
         ]
         _awards_loaded_at = time.time()
@@ -299,10 +307,48 @@ def start_message(game: dict) -> tuple[str, discord.Embed]:
     return "⚾ **比賽開始**", game_embed(game, title, lines, 0x041E42)
 
 
-def score_message(game: dict, plays: list[dict]) -> tuple[str, discord.Embed]:
-    lines = [f"⏱️ {inning_text(game)}"]
-    lines += [f"• {p.get('result', {}).get('description', '')}" for p in plays[-3:]]
-    return "🔥 **得分！**", game_embed(game, score_title(game), lines, 0xD50032)
+def completed_innings(game: dict) -> int:
+    """已經打完幾局（上下半局都結束才算一局）"""
+    ls = game.get("linescore") or {}
+    if game.get("status", {}).get("abstractGameState") == "Final":
+        return len(ls.get("innings") or [])
+    n = ls.get("currentInning") or 0
+    return n if ls.get("inningState") == "End" else max(n - 1, 0)
+
+
+def inning_message(game: dict, n: int, plays: list[dict]) -> tuple[str, discord.Embed]:
+    """第 n 局的摘要：上下半局各得幾分、誰打回分數，標題是這局結束時的比分"""
+    innings = (game.get("linescore") or {}).get("innings") or []
+    totals = {side: sum(i.get(side, {}).get("runs") or 0 for i in innings[:n]) for side in ("away", "home")}
+    inning = innings[n - 1] if n <= len(innings) else {}
+    lines = []
+    for half, side, mark in (("top", "away", "▲"), ("bottom", "home", "▼")):
+        runs = inning.get(side, {}).get("runs")
+        result = "不需進攻" if runs is None else f"得 {runs} 分" if runs else "無得分"
+        lines.append(f"{mark} **{n} 局{'上' if half == 'top' else '下'}｜"
+                     f"{team_label(game['teams'][side]['team'])} {result}**")
+        for p in plays:
+            about, res = p.get("about") or {}, p.get("result") or {}
+            if about.get("inning") == n and about.get("halfInning") == half:
+                lines.append(f"　• {res.get('description', '')}"
+                             f"（{res.get('awayScore', 0)} : {res.get('homeScore', 0)}）")
+    lines.append(linescore_table(game))
+    away, home = game["teams"]["away"]["team"], game["teams"]["home"]["team"]
+    title = f"{team_label(away)} {totals['away']} : {totals['home']} {team_label(home)}"
+    label = f"第 {n} 局結束" + ("（延長賽）" if n > 9 else "")
+    return f"⚾ **{label}**", game_embed(game, title, lines, 0xD50032)
+
+
+async def inning_updates(session: aiohttp.ClientSession, game: dict, done: int, now: int) -> list:
+    """第 done+1 到第 now 局的摘要（GitHub 排程延遲時可能一次補好幾局）"""
+    if now <= done:
+        return []
+    try:
+        plays = await fetch_scoring_plays(session, game["gamePk"])
+    except Exception as e:
+        print(f"⚠️ 抓取得分過程失敗：{e}")
+        plays = []
+    return [inning_message(game, n, plays) for n in range(done + 1, now + 1)]
 
 
 def final_message(game: dict) -> tuple[str, discord.Embed]:
@@ -410,6 +456,58 @@ def news_embed(article: dict) -> discord.Embed:
     return embed
 
 
+def is_record(article: dict) -> bool:
+    return bool(RECORD_NEWS.search(f"{article.get('headline') or ''} {article.get('description') or ''}"))
+
+
+def wanted_news(article: dict) -> bool:
+    return article.get("type") in NEWS_TYPES or is_record(article)
+
+
+def news_label(article: dict) -> str:
+    return "📊 **MLB 紀錄**" if is_record(article) else "🚨 **MLB 重大消息**"
+
+
+def is_periodic(award: dict) -> bool:
+    return bool(PERIODIC_AWARD.search(award.get("name", "")))
+
+
+def periodic_kind(award_id: str) -> str:
+    """ALPOW / NLPOW → POW，美聯國聯同一種獎項合併成一則"""
+    return award_id[2:] if award_id[:2] in ("AL", "NL") else award_id
+
+
+def periodic_text(award: dict, date: str) -> str:
+    """週獎的日期是該週最後一天，月獎的日期是該月最後一天"""
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        return date
+    if re.search(r"\bWeek\b", award.get("name", ""), re.I):
+        s = d - timedelta(days=6)
+        return f"{s.month}/{s.day}–{d.month}/{d.day}"
+    return f"{d.month}月"
+
+
+def honor_message(items: list[tuple[dict, dict]]) -> tuple[str, discord.Embed]:
+    """items：同一種獎項、同一期的 [(獎項, 得獎紀錄)]（通常是美聯、國聯各一位）"""
+    award, first = items[0]
+    name = PERIODIC_ZH.get(periodic_kind(award.get("id", ""))) or award.get("name", "")
+    league = {"AL": "美聯", "NL": "國聯"}
+    lines = []
+    for a, r in sorted(items, key=lambda x: x[0].get("id", "")):
+        prefix = league.get(a.get("id", "")[:2])
+        lines.append(f"**{prefix}**：{recipient_text(r)}" if prefix else f"• {recipient_text(r)}")
+    embed = discord.Embed(title=f"{first.get('season', '')} {name}｜{periodic_text(award, first.get('date', ''))}"[:256],
+                          description="\n".join(lines)[:4000], color=0xFFD700)
+    player_id = (first.get("player") or {}).get("id")
+    if len(items) == 1 and player_id:
+        embed.set_thumbnail(url=headshot_url(player_id))
+    embed.set_footer(text=f"MLB 獎項｜{award.get('name', '')}"[:2048])
+    embed.timestamp = datetime.now(timezone.utc)
+    return f"🏅 **MLB {name}**", embed
+
+
 def article_id(article: dict) -> str:
     return str(article.get("id") or article.get("links", {}).get("web", {}).get("href", ""))
 
@@ -473,13 +571,12 @@ async def game_updates(session: aiohttp.ClientSession, state: dict, initial: boo
         pk = str(game["gamePk"])
         status = game.get("status", {})
         abstract, detailed = status.get("abstractGameState", ""), status.get("detailedState", "")
-        away, home = game["teams"]["away"].get("score", 0), game["teams"]["home"].get("score", 0)
         prev = state["games"].get(pk)
+        innings = completed_innings(game)
         cur = {
-            "abstract": abstract, "status": detailed, "away": away, "home": home,
+            "abstract": abstract, "status": detailed, "innings": innings,
             "started": bool(prev and prev["started"]) or detailed == "In Progress"
                        or abstract == "Final",
-            "plays": prev["plays"] if prev else (0 if abstract == "Preview" else None),
         }
         new_games[pk] = cur
         # 新出現的比賽只記錄不發文（第一次執行，或機器人關掉一段時間後）
@@ -493,9 +590,15 @@ async def game_updates(session: aiohttp.ClientSession, state: dict, initial: boo
             continue
 
         notable = any(w in detailed for w in NOTABLE_STATUS)
+        # 舊版的狀態沒有 innings，當作已經發到目前這局，不補發
+        done = prev.get("innings", innings)
         if abstract == "Final":
             if prev["abstract"] != "Final":
-                messages.append(status_message(game) if notable else final_message(game))
+                if notable:
+                    messages.append(status_message(game))
+                else:  # 先補最後幾局的摘要，再另外發一則終場結果
+                    messages += await inning_updates(session, game, done, innings)
+                    messages.append(final_message(game))
             continue
         if detailed != prev["status"] and notable:
             messages.append(status_message(game))
@@ -503,15 +606,7 @@ async def game_updates(session: aiohttp.ClientSession, state: dict, initial: boo
             continue
         if detailed == "In Progress" and not prev["started"]:
             messages.append(start_message(game))
-        if (away, home) != (prev["away"], prev["home"]):
-            try:
-                plays = await fetch_scoring_plays(session, game["gamePk"])
-            except Exception as e:
-                print(f"⚠️ 抓取得分過程失敗：{e}")
-                plays = []
-            new_plays = plays[prev["plays"]:] if prev["plays"] is not None else plays[-1:]
-            cur["plays"] = len(plays) if plays else prev["plays"]
-            messages.append(score_message(game, new_plays))
+        messages += await inning_updates(session, game, done, innings)
     state["games"] = new_games
     return messages
 
@@ -536,12 +631,12 @@ async def tx_updates(session: aiohttp.ClientSession, state: dict, initial: bool)
 async def news_updates(session: aiohttp.ClientSession, state: dict, initial: bool) -> list:
     seen = set(state["news"])
     new_articles = [a for a in await fetch_news(session)
-                    if a.get("type") in NEWS_TYPES and article_id(a) not in seen]
+                    if wanted_news(a) and article_id(a) not in seen]
     new_articles.reverse()  # 舊的先發
     state["news"] += [article_id(a) for a in new_articles]
     if initial:
         return []
-    return [("🚨 **MLB 重大消息**", news_embed(a)) for a in new_articles]
+    return [(news_label(a), news_embed(a)) for a in new_articles]
 
 
 def recipient_key(r: dict) -> str:
@@ -552,7 +647,8 @@ def recipient_key(r: dict) -> str:
 async def award_updates(session: aiohttp.ClientSession, state: dict, initial: bool) -> list:
     if not initial and time.time() - state.get("awards_checked", 0) < AWARD_CHECK_MINUTES * 60:
         return []
-    pairs = [(a, s) for a in await fetch_award_defs(session) for s in award_seasons()]
+    pairs = [(a, s) for a in await fetch_award_defs(session) if not is_periodic(a)
+             for s in award_seasons()]
     limit = asyncio.Semaphore(8)  # 同時最多 8 個請求，避免對 MLB API 太兇
 
     async def fetch(award: dict, season: int) -> list[dict]:
@@ -576,6 +672,29 @@ async def award_updates(session: aiohttp.ClientSession, state: dict, initial: bo
             for (_, season), (award, recipients) in new.items()]
 
 
+async def honor_updates(session: aiohttp.ClientSession, state: dict, initial: bool) -> list:
+    """每週 / 每月最佳球員、投手、新秀、救援投手、美技"""
+    if not initial and time.time() - state.get("honors_checked", 0) < AWARD_CHECK_MINUTES * 60:
+        return []
+    awards = [a for a in await fetch_award_defs(session) if is_periodic(a)]
+    season = award_seasons()[-1]
+    results = await asyncio.gather(*(fetch_award_recipients(session, a["id"], season) for a in awards))
+    seen = set(state["honors"])
+    groups: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
+    for award, recipients in zip(awards, results):
+        for r in recipients:
+            key = f"{recipient_key(r)}:{r.get('date', '')}"  # 同一人連續得獎時用日期區分
+            if key in seen:
+                continue
+            seen.add(key)
+            state["honors"].append(key)
+            groups.setdefault((r.get("date", ""), periodic_kind(award["id"])), []).append((award, r))
+    state["honors_checked"] = time.time()
+    if initial:
+        return []
+    return [honor_message(items) for _, items in sorted(groups.items())]  # 舊的先發
+
+
 async def collect_updates(session: aiohttp.ClientSession) -> tuple[list, dict]:
     """回傳 (要發送的 [(文字, embed)], 更新後的狀態)；呼叫端發完訊息後要 save_state"""
     state = load_state() or {}
@@ -584,7 +703,8 @@ async def collect_updates(session: aiohttp.ClientSession) -> tuple[list, dict]:
     for key, name, check, empty in (("games", "比分", game_updates, {}),
                                     ("tx", "異動", tx_updates, []),
                                     ("news", "新聞", news_updates, []),
-                                    ("awards", "獎項", award_updates, [])):
+                                    ("awards", "獎項", award_updates, []),
+                                    ("honors", "每週/每月獎項", honor_updates, [])):
         # 第一次抓到某個來源時只記錄現有資料，不發文，避免洗版
         initial = key not in state
         state.setdefault(key, empty)
@@ -683,7 +803,7 @@ async def mlb_command(interaction: discord.Interaction,
                       count: app_commands.Range[int, 1, 5] = 3):
     await interaction.response.defer()
     try:
-        articles = [a for a in await fetch_news(bot.session) if a.get("type") in NEWS_TYPES]
+        articles = [a for a in await fetch_news(bot.session) if wanted_news(a)]
     except Exception as e:
         await interaction.followup.send(f"⚠️ 抓取 ESPN 新聞失敗：{e}")
         return
