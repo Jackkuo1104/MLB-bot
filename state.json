@@ -313,5 +313,8 @@
     "year": 2027,
     "checked": 1792049573.7112637
   },
-  "health": {}
+  "health": {},
+  "season": {
+    "opened": 2026
+  }
 }
