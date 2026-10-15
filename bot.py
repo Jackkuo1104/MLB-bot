@@ -243,12 +243,16 @@ def award_seasons() -> list[int]:
 
 async def fetch_news(session: aiohttp.ClientSession, limit: int = 50) -> list[dict]:
     data = await get_json(session, ESPN_NEWS_URL, {"limit": str(limit)})
-    return data.get("articles", [])  # 新到舊
+    articles = data.get("articles") or []
+    if not articles:  # ESPN 一定有新聞；抓到空的代表格式改了，讓健康檢查知道
+        raise RuntimeError("ESPN 新聞回傳是空的")
+    return articles  # 新到舊
 
 
 # ===== 翻譯 =====
 _zh_cache: dict[str, str] = {}
 _translate_limit = asyncio.Semaphore(5)  # 同時最多 5 個翻譯請求，避免被 Google 擋
+_translate_stats = {"ok": 0, "fail": 0}  # 這次檢查的翻譯成功/失敗次數（健康檢查用）
 FIXED_ZH = {  # 短詞直接對照，不送去翻譯（比賽狀態、延賽原因）
     "postponed": "延期", "delayed": "延遲", "delayed start": "延後開賽", "suspended": "暫停",
     "cancelled": "取消", "canceled": "取消", "final": "終場", "game over": "比賽結束",
@@ -336,7 +340,9 @@ async def translate(session: aiohttp.ClientSession, text: str, keep=()) -> str:
             out = pattern.sub(r"\1 \2", out)
     except Exception as e:
         print(f"⚠️ 翻譯失敗，顯示英文原文：{e}")
+        _translate_stats["fail"] += 1
         return text
+    _translate_stats["ok"] += 1
     _zh_cache[text] = out
     return out
 
@@ -1173,9 +1179,45 @@ async def draft_updates(session: aiohttp.ClientSession, state: dict, initial: bo
     return [] if initial else messages
 
 
+# ===== 健康檢查：資料來源連續好幾個小時抓不到時，在 Discord 提醒 =====
+HEALTH_ALERT_HOURS = 6  # 連續失敗這麼久才提醒（偶爾故障幾分鐘不吵）
+HEALTH_REMIND_DAYS = 7  # 一直沒恢復時，每隔幾天再提醒一次
+
+
+def health_fail(health: dict, name: str, error) -> list:
+    now = time.time()
+    h = health.setdefault(name, {"since": now})
+    h["error"] = str(error)[:300]
+    hours = (now - h["since"]) / 3600
+    if hours < HEALTH_ALERT_HOURS or now - h.get("alerted", 0) < HEALTH_REMIND_DAYS * 86400:
+        return []
+    h["alerted"] = now
+    embed = discord.Embed(
+        title=f"{name}已經 {hours:.0f} 小時抓不到資料",
+        description=f"最後的錯誤：{h['error']}\n\n可能是資料來源暫時故障，或是改了格式。"
+                    f"恢復後會再通知；如果好幾天都沒恢復，可能需要修改程式。",
+        color=0xF57C00)
+    embed.set_footer(text="MLB bot 健康檢查")
+    embed.timestamp = datetime.now(timezone.utc)
+    return [("⚠️ **MLB bot 健康檢查**", embed)]
+
+
+def health_ok(health: dict, name: str) -> list:
+    h = health.pop(name, None)
+    if not h or not h.get("alerted"):
+        return []
+    embed = discord.Embed(title=f"{name}已恢復正常",
+                          description=f"中斷了大約 {(time.time() - h['since']) / 3600:.0f} 小時", color=0x43A047)
+    embed.set_footer(text="MLB bot 健康檢查")
+    embed.timestamp = datetime.now(timezone.utc)
+    return [("✅ **MLB bot 健康檢查**", embed)]
+
+
 async def collect_updates(session: aiohttp.ClientSession) -> tuple[list, dict]:
     """回傳 (要發送的 [(文字, embed)], 更新後的狀態)；呼叫端發完訊息後要 save_state"""
     state = load_state() or {}
+    health = state.setdefault("health", {})
+    _translate_stats.update(ok=0, fail=0)
     await refresh_teams(session)
     messages = []
     for key, name, check, empty in (("games", "比分", game_updates, {}),
@@ -1191,11 +1233,18 @@ async def collect_updates(session: aiohttp.ClientSession) -> tuple[list, dict]:
             messages += await check(session, state, initial)
         except Exception as e:
             print(f"⚠️ 抓取{name}失敗：{e}")
+            messages += health_fail(health, name, e)
             if initial:
                 del state[key]  # 下次成功時再初始化
             continue
+        messages += health_ok(health, name)
         if initial:
             print(f"初始化完成，已記錄 {len(state[key])} 筆{name}")
+    # 翻譯：這次有翻譯但全部失敗才算故障（失敗時訊息會改顯示英文）
+    if _translate_stats["fail"] and not _translate_stats["ok"]:
+        messages += health_fail(health, "中文翻譯", "Google 翻譯的請求全部失敗，訊息會先顯示英文")
+    elif _translate_stats["ok"]:
+        messages += health_ok(health, "中文翻譯")
     return messages, state
 
 
