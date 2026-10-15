@@ -315,6 +315,13 @@
   },
   "health": {},
   "season": {
-    "opened": 2026
+    "opened": 2026,
+    "playoffs": 2026,
+    "reg_end": 2026,
+    "v": 3,
+    "post_days": [
+      "2026-10-14"
+    ],
+    "post_ready": {}
   }
 }
