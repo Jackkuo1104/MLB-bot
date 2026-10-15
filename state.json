@@ -12,9 +12,9 @@
       "scored": null
     },
     "849818": {
-      "abstract": "Live",
-      "status": "In Progress",
-      "innings": 8,
+      "abstract": "Final",
+      "status": "Game Over",
+      "innings": 9,
       "score": [
         2,
         3
@@ -313,7 +313,12 @@
     "year": 2027,
     "checked": 1792090527.264104
   },
-  "health": {},
+  "health": {
+    "中文翻譯": {
+      "since": 1792093229.5300097,
+      "error": "Google 翻譯的請求全部失敗，訊息會先顯示英文"
+    }
+  },
   "season": {
     "opened": 2026,
     "playoffs": 2026,
