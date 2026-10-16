@@ -27,8 +27,8 @@ except ImportError:
 # ===== 設定 =====
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-_channel_id = (os.getenv("CHANNEL_ID") or "").strip()
-CHANNEL_ID = int(_channel_id) if _channel_id.isdigit() else 0
+# 要發消息的頻道 ID，可以填好幾個（用逗號隔開，可以在不同伺服器），每則消息都會發到所有頻道
+CHANNEL_IDS = [int(c) for c in re.split(r"[,\s]+", os.getenv("CHANNEL_ID") or "") if c.isdigit()]
 CHECK_SECONDS = float(os.getenv("CHECK_SECONDS", "60"))
 # 只追蹤這些球隊的比分和異動（逗號分隔的縮寫，例如 LAD,NYY）；留空代表全部球隊
 FOLLOW_TEAMS = {t.strip().upper() for t in os.getenv("FOLLOW_TEAMS", "").split(",") if t.strip()}
@@ -1592,17 +1592,17 @@ class MLBBot(discord.Client):
     @tasks.loop(seconds=60)
     async def check_updates(self):
         messages, state = await collect_updates(self.session)
-        channel = self.get_channel(CHANNEL_ID)
-        if messages and channel is None:
-            print("⚠️ 找不到頻道，請確認 CHANNEL_ID 和機器人權限")
-        elif channel is not None:
-            for content, embed, *image in messages:  # 有些訊息附一張圖（季後賽對戰圖）
+        channels = [c for c in map(self.get_channel, CHANNEL_IDS) if c is not None]
+        if messages and len(channels) < len(CHANNEL_IDS):
+            print("⚠️ 有頻道找不到，請確認 CHANNEL_ID 和機器人權限")
+        for content, embed, *image in messages:  # 有些訊息附一張圖（季後賽對戰圖）
+            for channel in channels:
                 try:
                     files = [discord.File(io.BytesIO(image[0]), "bracket.png")] if image else []
                     await channel.send(content=content, embed=embed, files=files)
-                    print(f"已發送：{content} {embed.title}")
+                    print(f"已發送到 {channel.guild.name}：{content} {embed.title}")
                 except discord.HTTPException as e:
-                    print(f"⚠️ 發送失敗：{e}")
+                    print(f"⚠️ 發送到 {channel.guild.name} 失敗：{e}")
         save_state(state)
 
     @check_updates.before_loop
@@ -1692,7 +1692,7 @@ async def moves_command(interaction: discord.Interaction,
 
 
 if __name__ == "__main__":
-    missing = [k for k, v in {"DISCORD_TOKEN": DISCORD_TOKEN, "CHANNEL_ID": CHANNEL_ID}.items()
+    missing = [k for k, v in {"DISCORD_TOKEN": DISCORD_TOKEN, "CHANNEL_ID": CHANNEL_IDS}.items()
                if not v]
     if missing:
         raise SystemExit(f"請先在 .env 設定：{', '.join(missing)}（CHANNEL_ID 必須是數字）")
