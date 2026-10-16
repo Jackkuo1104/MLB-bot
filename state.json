@@ -13,7 +13,7 @@
     },
     "849810": {
       "abstract": "Final",
-      "status": "Game Over",
+      "status": "Final",
       "innings": 9,
       "score": [
         6,
@@ -66,7 +66,8 @@
     "50191465",
     "50191527",
     "50192041",
-    "50192351"
+    "50192351",
+    "50193819"
   ],
   "awards": [
     "MLBHOF:2026:116999:137:Contemporary Era Ballot Selection",
