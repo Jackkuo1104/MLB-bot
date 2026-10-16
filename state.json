@@ -319,7 +319,12 @@
     "year": 2027,
     "checked": 1792131333.124613
   },
-  "health": {},
+  "health": {
+    "新聞": {
+      "since": 1792133721.9351397,
+      "error": "ESPN 新聞回傳是空的"
+    }
+  },
   "season": {
     "opened": 2026,
     "playoffs": 2026,
