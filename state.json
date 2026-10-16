@@ -12,9 +12,9 @@
       "scored": 3
     },
     "849810": {
-      "abstract": "Live",
-      "status": "In Progress",
-      "innings": 8,
+      "abstract": "Final",
+      "status": "Game Over",
+      "innings": 9,
       "score": [
         6,
         4
@@ -23,17 +23,6 @@
       "scored": 7
     },
     "849817": {
-      "abstract": "Preview",
-      "status": "Scheduled",
-      "innings": 0,
-      "score": [
-        0,
-        0
-      ],
-      "started": false,
-      "scored": 0
-    },
-    "849808": {
       "abstract": "Preview",
       "status": "Scheduled",
       "innings": 0,
@@ -326,7 +315,7 @@
   "honors_checked": 1792119323.371836,
   "draft": {
     "year": 2027,
-    "checked": 1792116628.2553473
+    "checked": 1792120240.007497
   },
   "health": {},
   "season": {
@@ -337,6 +326,8 @@
     "post_days": [
       "2026-10-14"
     ],
-    "post_ready": {}
+    "post_ready": {
+      "2026-10-15": 1792120239.55306
+    }
   }
 }
