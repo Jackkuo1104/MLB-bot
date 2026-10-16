@@ -313,12 +313,17 @@
     "MLBPLAYOW:2026:666176:108::2026-04-05",
     "MLBPLAYOW:2026:683083:120::2026-03-29"
   ],
-  "honors_checked": 1792121124.3637514,
+  "honors_checked": 1792123258.482662,
   "draft": {
     "year": 2027,
     "checked": 1792120240.007497
   },
-  "health": {},
+  "health": {
+    "獎項": {
+      "since": 1792123258.318785,
+      "error": ""
+    }
+  },
   "season": {
     "opened": 2026,
     "playoffs": 2026,
