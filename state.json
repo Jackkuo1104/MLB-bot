@@ -1,14 +1,14 @@
 {
   "games": {
     "849817": {
-      "abstract": "Preview",
-      "status": "Delayed Start",
+      "abstract": "Final",
+      "status": "Postponed",
       "innings": 0,
       "score": [
         0,
         0
       ],
-      "started": false,
+      "started": true,
       "scored": 0
     },
     "849816": {
@@ -321,6 +321,8 @@
       "2026-10-14",
       "2026-10-15"
     ],
-    "post_ready": {}
+    "post_ready": {
+      "2026-10-16": 1792199576.803783
+    }
   }
 }
