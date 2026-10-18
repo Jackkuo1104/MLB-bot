@@ -13,7 +13,7 @@
     },
     "849817": {
       "abstract": "Preview",
-      "status": "Scheduled",
+      "status": "Pre-Game",
       "innings": 0,
       "score": [
         0,
@@ -317,7 +317,8 @@
   "health": {
     "中文翻譯": {
       "since": 1792295724.1164658,
-      "error": "Google 翻譯的請求全部失敗，訊息會先顯示英文"
+      "error": "Google 翻譯的請求全部失敗，訊息會先顯示英文",
+      "alerted": 1792343020.0730107
     }
   },
   "season": {
