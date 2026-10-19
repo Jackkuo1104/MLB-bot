@@ -15,6 +15,8 @@ from bot import CHANNEL_IDS, DISCORD_TOKEN, collect_updates, save_state
 DISCORD_API = "https://discord.com/api/v10"
 LIVE_SECONDS = 150  # 選秀進行中：這次執行再多檢查 2.5 分鐘（GitHub 每次最多跑 5 分鐘，安裝套件約 1 分鐘）
 LIVE_INTERVAL = 20  # 每 20 秒檢查一次
+SEND_MESSAGES = 1 << 11  # Discord「發送訊息」權限
+TEXT_CHANNEL_TYPES = (0, 5)  # 文字頻道、公告頻道
 
 
 async def send_message(session: aiohttp.ClientSession, channel_id: int, content: str, embed: discord.Embed,
@@ -60,22 +62,65 @@ async def deliver(session: aiohttp.ClientSession, channel_id: int, content: str,
         return False
 
 
+async def discord_get(session: aiohttp.ClientSession, path: str):
+    headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+    for _ in range(3):
+        async with session.get(f"{DISCORD_API}{path}", headers=headers,
+                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status == 429:
+                await asyncio.sleep((await resp.json()).get("retry_after", 5))
+                continue
+            resp.raise_for_status()
+            return await resp.json()
+    raise RuntimeError("Discord 持續限速")
+
+
+async def joined_channels(session: aiohttp.ClientSession) -> list[int]:
+    """bot 被單獨加進去的頻道：頻道權限裡有特別設定這個 bot（或它的專屬身分組）可以發送訊息。
+    只是邀請進伺服器、沒有加進任何頻道的話不會發"""
+    me = await discord_get(session, "/users/@me")
+    found = []
+    for guild in await discord_get(session, "/users/@me/guilds"):
+        roles = await discord_get(session, f"/guilds/{guild['id']}/roles")
+        targets = {me["id"]} | {r["id"] for r in roles if (r.get("tags") or {}).get("bot_id") == me["id"]}
+        for ch in await discord_get(session, f"/guilds/{guild['id']}/channels"):
+            if ch.get("type") in TEXT_CHANNEL_TYPES and any(
+                    o.get("id") in targets and int(o.get("allow") or 0) & SEND_MESSAGES
+                    for o in ch.get("permission_overwrites") or []):
+                found.append(int(ch["id"]))
+                print(f"頻道：{guild.get('name')} #{ch.get('name')}")
+    return found
+
+
+async def target_channels(session: aiohttp.ClientSession) -> list[int]:
+    """要發送的頻道 = bot 被加進去的頻道 + CHANNEL_ID 另外指定的頻道"""
+    try:
+        found = await joined_channels(session)
+    except Exception as e:
+        print(f"⚠️ 查詢 bot 所在的頻道失敗，只發到 CHANNEL_ID：{e}")
+        found = []
+    return list(dict.fromkeys(found + CHANNEL_IDS))
+
+
 async def main() -> None:
-    if not DISCORD_TOKEN or not CHANNEL_IDS:
-        raise SystemExit("缺少 DISCORD_TOKEN 或 CHANNEL_ID（頻道 ID 必須是數字，好幾個用逗號隔開）")
+    if not DISCORD_TOKEN:
+        raise SystemExit("缺少 DISCORD_TOKEN")
 
     deadline = time.monotonic() + LIVE_SECONDS
     async with aiohttp.ClientSession() as session:
+        channels = await target_channels(session)
+        if not channels:  # 不存狀態，等 bot 加進頻道後再發，消息不會漏掉
+            raise SystemExit("bot 還沒有被加進任何頻道：請在頻道的權限設定加入這個 bot 並允許發送訊息")
         while True:
             messages, state = await collect_updates(session)
             sent = 0
             for content, embed, *image in messages:
                 # 每則消息發到所有頻道（可以在不同伺服器）
-                ok = [await deliver(session, c, content, embed, image[0] if image else None) for c in CHANNEL_IDS]
+                ok = [await deliver(session, c, content, embed, image[0] if image else None) for c in channels]
                 sent += sum(ok)
-                print(f"已發送到 {sum(ok)}/{len(CHANNEL_IDS)} 個頻道：{content} {embed.title}")
+                print(f"已發送到 {sum(ok)}/{len(channels)} 個頻道：{content} {embed.title}")
             save_state(state)
-            print(f"檢查完成，發送 {sent}/{len(messages) * len(CHANNEL_IDS)} 則（{len(CHANNEL_IDS)} 個頻道）")
+            print(f"檢查完成，發送 {sent}/{len(messages) * len(channels)} 則（{len(channels)} 個頻道）")
             # 選秀進行中才繼續每 20 秒檢查，其他時候檢查一次就結束
             live = (state.get("draft") or {}).get("live_until", 0) > time.time()
             if not live or time.monotonic() + LIVE_INTERVAL > deadline:
