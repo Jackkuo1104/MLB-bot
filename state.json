@@ -1,26 +1,15 @@
 {
   "games": {
     "849815": {
-      "abstract": "Live",
-      "status": "In Progress",
-      "innings": 8,
+      "abstract": "Final",
+      "status": "Game Over",
+      "innings": 9,
       "score": [
         3,
         7
       ],
       "started": true,
       "scored": 7
-    },
-    "849814": {
-      "abstract": "Preview",
-      "status": "Scheduled",
-      "innings": 0,
-      "score": [
-        0,
-        0
-      ],
-      "started": false,
-      "scored": 0
     }
   },
   "days_done": [],
@@ -334,6 +323,8 @@
       "2026-10-18",
       "2026-10-17"
     ],
-    "post_ready": {}
+    "post_ready": {
+      "2026-10-19": 1792465527.7037017
+    }
   }
 }
