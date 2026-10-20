@@ -6,10 +6,10 @@
       "innings": 7,
       "score": [
         3,
-        5
+        7
       ],
       "started": true,
-      "scored": 6
+      "scored": 7
     },
     "849814": {
       "abstract": "Preview",
@@ -320,7 +320,7 @@
   "honors_checked": 1792463728.2755437,
   "draft": {
     "year": 2027,
-    "checked": 1792461325.1797483
+    "checked": 1792464926.5357158
   },
   "health": {},
   "season": {
