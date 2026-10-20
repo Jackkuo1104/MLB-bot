@@ -10,6 +10,7 @@ import re
 import json
 import time
 import asyncio
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -273,6 +274,62 @@ PRE_ZH = [  # 送去翻譯前先換掉的固定說法
     (re.compile(r"\bGame Highlights\b"), "比賽精華"),
     (re.compile(r"\bGame (\d+)\b"), r"第 \1 戰"),
 ]
+# 運動術語：Google 常翻錯，翻完後修正。（原文有這個英文，譯文裡的錯誤翻法 → 正確說法）
+# 只在原文真的有那個英文時才改，不會誤改別的句子；看到新的怪翻譯就加一行
+TERM_FIX = [
+    (r"four-seam|four-seamer", r"四縫(?:線)?快球|四接縫快球|四縫線球", "四縫線速球"),
+    (r"two-seam|two-seamer", r"二縫(?:線)?快球|兩縫(?:線)?快球", "二縫線速球"),
+    (r"fastball|heater", r"快球|快速球|加熱器", "速球"),
+    (r"\bsinker", r"下沉球|沉降球|下沉器|沉子", "伸卡球"),
+    (r"\bcutter", r"切球|切割器|切割球|刀具", "卡特球"),
+    (r"\bslider", r"滑塊|滑桿|滑動球", "滑球"),
+    (r"\bsweeper", r"清掃球|掃地機|掃帚|清潔工", "橫掃球"),
+    (r"curveball|\bcurve\b", r"弧線球|彎球|曲線球", "曲球"),
+    (r"changeup|change-up", r"變化球|換球", "變速球"),
+    (r"splitter|split-finger", r"分指球|分裂球|分離器|指球|分裂(?!球)", "指叉球"),
+    (r"knuckleball", r"關節球|指節球", "蝴蝶球"),
+    (r"walk[- ]?off", r"走下來|走開|步行結束|走出", "再見"),
+    (r"\bcloser\b", r"更接近者|更近者|關閉者|近距離", "終結者"),
+    (r"blown save|blows? (?:a |the )?save", r"撲救|救球", "救援失敗"),
+    (r"\breliever", r"中繼員|救援者|救濟者|緩解者", "後援投手"),
+    (r"slugger", r"重擊手|強擊手|猛擊者", "強打者"),
+    (r"bullpen", r"牛欄|牛圈", "牛棚"),
+    (r"strikeout|struck out", r"罷工", "三振"),
+    (r"\bshutout", r"完成封|停賽|關門", "完封"),
+    (r"no-hitter|no-hit", r"無安打者|無打擊", "無安打比賽"),
+    (r"perfect game", r"完美比賽", "完全比賽"),
+    (r"designat\w*\b.{0,60}?for assignment|\bDFA",
+     r"指定(.{0,10}?)(?:進行|執行)?(?:任務|分配|指派)", r"將\1指定讓渡"),
+    (r"injured list", r"受傷名單|傷病名單|傷者名單", "傷兵名單"),
+    (r"grand slam", r"大滿貫", "滿貫全壘打"),
+    (r"\bhomer|home run", r"本壘打|全壘打打", "全壘打"),
+    (r"\bRBI", r"打點數", "打點"),
+    (r"(?-i:\bERA\b)", r"時代", "防禦率"),  # 只認大寫 ERA，避免 new era 這種一般用法
+    (r"pennant", r"錦旗|三角旗", "聯盟冠軍"),
+    (r"\bALCS\b|American League Championship Series", r"美國聯盟冠軍系列賽|美聯冠軍系列賽|\bALCS\b", "美聯冠軍賽"),
+    (r"\bNLCS\b|National League Championship Series", r"國家聯盟冠軍系列賽|國聯冠軍系列賽|\bNLCS\b", "國聯冠軍賽"),
+    (r"\bALDS\b|American League Division Series", r"美國聯盟分區系列賽|\bALDS\b", "美聯分區系列賽"),
+    (r"\bNLDS\b|National League Division Series", r"國家聯盟分區系列賽|\bNLDS\b", "國聯分區系列賽"),
+    (r"\bguards?\b", r"守衛|警衛", "後衛"),
+    (r"American League", r"美國聯盟", "美聯"),
+    (r"National League", r"國家聯盟", "國聯"),
+    (r"Cy Young", r"青年賽|賽揚青年", "賽揚獎"),
+    (r"Gold Glove", r"金手套獎", "金手套"),
+    (r"Silver Slugger", r"銀色重擊手|銀色強打者|銀色擊球手", "銀棒獎"),
+    (r"qualifying offer", r"資格報價|合格要約|資格要約", "合格報價"),
+    (r"arbitration", r"(?<!薪資)仲裁", "薪資仲裁"),
+    (r"non-tender", r"非投標|不投標", "不續約"),
+    (r"(?:club|team) option", r"俱樂部選擇權|俱樂部選項|球隊選擇權|團隊選項", "球隊選項"),
+    (r"player option", r"玩家選擇權|球員選擇權|玩家選項", "球員選項"),
+    (r"mutual option", r"共同選擇權|相互選擇權|雙方選擇權", "雙方選項"),
+    (r"opt[- ]out", r"選擇退出條款|選擇退出|退出條款", "跳出條款"),
+    (r"no-trade", r"無交易條款|禁止交易條款|不交易條款", "不可交易條款"),
+    (r"free agen", r"免費代理人?|自由代理人?|自由經紀人", "自由球員"),
+    (r"\bextension\b", r"延期", "延長合約"),
+    (r"pinch[- ]hit", r"捏擊|捏打", "代打"),
+    (r"double play", r"雙打", "雙殺"),
+]
+TERM_FIX = [(re.compile(s, re.I), re.compile(w), r) for s, w, r in TERM_FIX]
 # 文章沒標記到的人名：連續 2~4 個大寫開頭的字；含下列常見字的不算人名
 NAME_LIKE = re.compile(r"(?<![\w'’])[A-Z][a-z'’.-]+(?: +(?:[A-Z][a-z'’.-]+|Jr\.?|Sr\.?|II|III|IV)){1,3}(?![\w'’])")
 NOT_NAME = set("""a an the and or of in on at to for with from by vs after before as is are was
@@ -330,7 +387,7 @@ async def google_translate(session: aiohttp.ClientSession, text: str) -> list:
                 resp.raise_for_status()
                 return await resp.json(content_type=None)
         except aiohttp.ClientResponseError as e:
-            if e.status not in (403, 429):
+            if e.status not in (403, 429, 500, 502, 503):  # 被擋或伺服器暫時故障：換下一個
                 raise
             if _translate_client[0] == n:  # 這個被擋了，之後都改用下一個
                 _translate_client[0] = (n + 1) % len(TRANSLATE_CLIENTS)
@@ -361,6 +418,11 @@ async def translate(session: aiohttp.ClientSession, text: str, keep=()) -> str:
                      lambda m: terms[int(m.group(1))] if int(m.group(1)) < len(terms) else m.group(0), out)
         if not out.strip() or "__N" in out:
             raise ValueError(f"翻譯結果異常：{out}")
+        for source, wrong, right in TERM_FIX:  # 修正 Google 翻錯的運動術語
+            if source.search(text):
+                out = wrong.sub(right, out)
+        out = re.sub(r"\b(Jr|Sr|St)。", r"\1.", out)  # Jr. 的句點不是句號
+        out = re.sub(r"(?<=[一-鿿]) +(?=[一-鿿])", "", out)  # 換掉術語後，中文之間不留空格
         for pattern in CJK_LATIN:  # 中文和英文、數字之間加空格比較好讀
             out = pattern.sub(r"\1 \2", out)
     except Exception as e:
@@ -685,9 +747,13 @@ def status_message(game: dict) -> tuple[str, discord.Embed]:
     return "⏸️ **比賽狀態更新**", game_embed(game, score_title(game), lines, 0x757575)
 
 
-def tx_message(tx: dict) -> tuple[str, discord.Embed]:
+def tx_message(tx: dict, contracts: dict | None = None) -> tuple[str, discord.Embed]:
     label, color = TX_LABELS.get(tx.get("typeCode"), (zh(tx.get("typeDesc", "異動")), 0x757575))
-    embed = discord.Embed(title=label, description=zh(tx.get("description", ""))[:4000], color=color)
+    description = zh(tx.get("description", ""))
+    money = contract_lines(tx, contracts or {})
+    if money:
+        description += "\n\n" + "\n".join(money)
+    embed = discord.Embed(title=label, description=description[:4000], color=color)
     team_id = next((i for i in (tx.get("toTeam", {}).get("id"), tx.get("fromTeam", {}).get("id"))
                     if i in mlb_teams), None)
     if team_id:
@@ -830,6 +896,148 @@ def wanted_tx(tx: dict) -> bool:
     if tx.get("typeCode") not in TX_TYPES or not follows(*tx_team_ids(tx)):
         return False
     return not (SKIP_MINOR_DEALS and "minor league" in tx.get("description", "").lower())
+
+
+# ===== 合約金額：官方異動沒有金額，從新聞標題記下「球員 → 金額」，簽約時附上；沒有金額就寫合約種類 =====
+CONTRACT_KEEP_DAYS = 150  # 新聞報的金額保留幾天（談妥到官方公布可能隔很久）
+NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+             "nine": 9, "ten": 10}
+CONTRACT_MONEY = re.compile(
+    r"(?:\b(?P<years>\d+|one|two|three|four|five|six|seven|eight|nine|ten)[- ]years?,?\s+(?:deal\s+worth\s+)?)?"
+    r"\$(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>million|billion|M|B)\b", re.I)
+CONTRACT_YEARS = re.compile(r"\b(?P<n>\d+|one|two|three|four|five|six|seven|eight|nine|ten)[- ]year\b", re.I)
+CONTRACT_WORDS = re.compile(r"\b(agree|agrees|agreed|sign|signs|signed|re-sign|extension|deal|contract)\b", re.I)
+CONTRACT_TYPES = [  # 異動敘述裡的合約種類 → 中文（由上往下找第一個符合的）
+    (r"minor league contract", "小聯盟合約"), (r"major league contract", "大聯盟合約"),
+    (r"\b(?P<n>\d+)-year (?:contract )?extension", "{n} 年延長合約"), (r"\bextension\b", "延長合約"),
+    (r"\b(?P<n>\d+)-year", "{n} 年合約"), (r"\bone-year", "1 年合約"),
+]
+CONTRACT_TYPES = [(re.compile(p, re.I), t) for p, t in CONTRACT_TYPES]
+SIGN_CODES = ("SFA", "SGN")
+
+
+def norm_name(name: str) -> str:
+    """比對球員名字用：去掉重音符號、大小寫、標點（Velázquez = Velazquez）"""
+    text = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z ]", "", text.lower()).strip()
+
+
+def money_zh(amount: float) -> str:
+    if amount >= 1e8:
+        return f"{amount / 1e8:.2f}".rstrip("0").rstrip(".") + " 億美元"
+    return f"{amount / 1e4:,.0f} 萬美元"
+
+
+# 新聞裡寫到的簽約方式、附帶條款（同一組只取第一個符合的，例如寫了非納稅中產就不再寫中產）
+CONTRACT_DETAILS = [  # (分類, 組, 英文, 中文)；分類 how = 簽約方式、terms = 附帶條款
+    ("how", "mle", r"non-taxpayer mid-level", "非納稅中產特例"),
+    ("how", "mle", r"taxpayer mid-level", "納稅中產特例"),
+    ("how", "mle", r"room (?:mid-level )?exception", "空間中產特例"),
+    ("how", "mle", r"mid-level exception|\bMLE\b", "中產特例"),
+    ("how", "bae", r"bi-annual exception", "雙年特例"),
+    ("how", "min", r"veteran(?:'s)? minimum", "老將底薪"),
+    ("how", "min", r"\b(?:league )?minimum (?:contract|deal|salary)", "底薪"),
+    ("how", "max", r"supermax|designated veteran", "超級頂薪"),
+    ("how", "max", r"rookie max|Rose Rule", "新秀頂薪"),
+    ("how", "max", r"\bmax(?:imum)? (?:contract|extension|deal)|\bfull max\b", "頂薪"),
+    ("how", "qo", r"qualifying offer", "合格報價"),
+    ("how", "sheet", r"offer sheet", "報價單"),
+    ("how", "snt", r"sign-and-trade", "先簽後換"),
+    ("how", "hard", r"hardship exception", "傷病特例"),
+    ("how", "arb", r"avoid(?:ed|ing)? arbitration|arbitration", "薪資仲裁相關"),
+    ("terms", "po", r"player option", "球員選項"),
+    ("terms", "to", r"(?:team|club) option", "球隊選項"),
+    ("terms", "mo", r"mutual option", "雙方選項"),
+    ("terms", "vo", r"vesting option", "達標生效選項"),
+    ("terms", "oo", r"opt[- ]outs?\b", "跳出條款"),
+    ("terms", "ntc", r"full no-trade", "完整不可交易條款"),
+    ("terms", "ntc", r"(?:partial|limited) no-trade|no-trade protection", "部分不可交易條款"),
+    ("terms", "ntc", r"no-trade", "不可交易條款"),
+    ("terms", "tk", r"trade kicker", "交易獎金"),
+    ("terms", "sb", r"signing bonus", "簽約獎金"),
+    ("terms", "def", r"deferr", "延遲支付"),
+    ("terms", "gtd", r"fully guaranteed", "全額保障"),
+    ("terms", "gtd", r"partially guaranteed", "部分保障"),
+    ("terms", "gtd", r"non-guaranteed", "非保障"),
+    ("terms", "inc", r"incentive", "附激勵獎金"),
+]
+CONTRACT_DETAILS = [(kind, group, re.compile(p, re.I), zh_text) for kind, group, p, zh_text in CONTRACT_DETAILS]
+
+
+def contract_details(text: str) -> dict:
+    found, used = {"how": [], "terms": []}, set()
+    for kind, group, pattern, zh_text in CONTRACT_DETAILS:
+        if group not in used and pattern.search(text):
+            used.add(group)
+            found[kind].append(zh_text)
+    return found
+
+
+def remember_contracts(state: dict, articles: list[dict]) -> None:
+    """新聞寫到合約的，記下 {球員: 金額、簽約方式、附帶條款}；只記新聞明確寫到的，不推測"""
+    book = state.setdefault("contracts", {})
+    now = time.time()
+    for a in articles:
+        headline, desc = a.get("headline") or "", a.get("description") or ""
+        if not CONTRACT_WORDS.search(headline):
+            continue
+        text = headline
+        m = CONTRACT_MONEY.search(headline)
+        if not m:
+            text, m = desc, CONTRACT_MONEY.search(desc)
+        details = contract_details(headline + " " + desc)
+        if not m and not details["how"] and not details["terms"]:
+            continue
+        players = [c.get("description", "") for c in a.get("categories") or []
+                   if c.get("type") == "athlete" and c.get("description")]
+        named = [p for p in players if re.sub(r"\s+(Jr\.?|Sr\.?|II|III|IV)$", "", p).split()[-1] in headline]
+        named = named or (players if len(players) == 1 else [])
+        money = None
+        if m:
+            # 年數可能寫在金額後面（$1 million, 1-year deal）
+            y = m["years"] or (CONTRACT_YEARS.search(text) or {"n": None})["n"]
+            years = y and (NUM_WORDS.get(y.lower()) or int(y))
+            amount = float(m["amount"]) * (1e9 if m["unit"].lower().startswith("b") else 1e6)
+            money = f"{years} 年 {money_zh(amount)}" if years else money_zh(amount)
+        for p in named:
+            entry = book.setdefault(norm_name(p), {})
+            if money:
+                entry["text"] = money
+            for kind in ("how", "terms"):  # 同一個球員好幾則新聞：條款合併
+                entry[kind] = list(dict.fromkeys(entry.get(kind, []) + details[kind]))
+            entry["t"] = now
+    for k in [k for k, v in book.items() if now - v.get("t", 0) > CONTRACT_KEEP_DAYS * 86400]:
+        del book[k]
+
+
+def contract_extra(entry: dict) -> list[str]:
+    """簽約方式、附帶條款各一行（新聞有寫才有）"""
+    lines = []
+    if entry.get("how"):
+        lines.append(f"　🏷️ 簽約方式：{'、'.join(entry['how'])}")
+    if entry.get("terms"):
+        lines.append(f"　📑 附帶：{'、'.join(entry['terms'])}")
+    return lines
+
+
+def contract_type(sentence: str, default: str) -> str:
+    for pattern, zh_type in CONTRACT_TYPES:
+        m = pattern.search(sentence)
+        if m:
+            return zh_type.format(**m.groupdict())
+    return default
+
+
+def contract_lines(tx: dict, book: dict) -> list[str]:
+    """簽約的球員一行：有報導金額就附金額，沒有就寫合約種類（官方沒寫小聯盟合約的就是大聯盟合約）"""
+    name = (tx.get("person") or {}).get("fullName")
+    if tx.get("typeCode") not in SIGN_CODES or not name:
+        return []
+    kind = contract_type(tx.get("description", ""), "大聯盟合約")
+    entry = book.get(norm_name(name)) or {}
+    money = entry.get("text")
+    return ([f"💰 {name}：{kind}｜{money}（依 ESPN 報導）" if money else f"📄 {name}：{kind}（金額未公開）"]
+            + contract_extra(entry))
 
 
 def day_done_message(date: str, games: list[dict]) -> tuple[str, discord.Embed]:
@@ -1051,7 +1259,7 @@ async def bracket_image(session: aiohttp.ClientSession, season: int, date: str) 
                                                 for i in teams})
     font = await bracket.ensure_font(session)
 
-    def box(sid: str, final: bool = False) -> bracket.Box:
+    def box(sid: str, final: bool = False) -> "bracket.Box":
         s = series.get(sid)
         if not s:
             return bracket.Box()
@@ -1267,6 +1475,10 @@ async def tx_updates(session: aiohttp.ClientSession, state: dict, initial: bool)
     new_txs = [t for t in await fetch_transactions(session)
                if wanted_tx(t) and str(t.get("id")) not in seen]
     state["tx"] += [str(t.get("id")) for t in new_txs]
+    try:  # 先從最新的新聞記下合約金額（簽約時附上）
+        remember_contracts(state, await fetch_news(session))
+    except Exception as e:
+        print(f"⚠️ 從新聞找合約金額失敗：{e}")
     if initial:
         return []
     await asyncio.gather(*(translate_tx(session, t) for t in new_txs))
@@ -1277,7 +1489,7 @@ async def tx_updates(session: aiohttp.ClientSession, state: dict, initial: bool)
         if desc in posted:  # 多人交易常會每個球員各一筆相同敘述，只發一次
             continue
         posted.add(desc)
-        messages.append(tx_message(tx))
+        messages.append(tx_message(tx, state.get("contracts")))
     return messages
 
 
