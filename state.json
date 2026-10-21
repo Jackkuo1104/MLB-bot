@@ -1,17 +1,5 @@
 {
-  "games": {
-    "849815": {
-      "abstract": "Final",
-      "status": "Final",
-      "innings": 9,
-      "score": [
-        3,
-        7
-      ],
-      "started": true,
-      "scored": 7
-    }
-  },
+  "games": {},
   "days_done": [],
   "tx": [],
   "news": [
