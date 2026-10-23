@@ -1,5 +1,17 @@
 {
-  "games": {},
+  "games": {
+    "849805": {
+      "abstract": "Preview",
+      "status": "Scheduled",
+      "innings": 0,
+      "score": [
+        0,
+        0
+      ],
+      "started": false,
+      "scored": 0
+    }
+  },
   "days_done": [],
   "tx": [],
   "news": [
