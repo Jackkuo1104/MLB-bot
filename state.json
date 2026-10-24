@@ -1,9 +1,9 @@
 {
   "games": {
     "849805": {
-      "abstract": "Live",
-      "status": "In Progress",
-      "innings": 8,
+      "abstract": "Final",
+      "status": "Game Over",
+      "innings": 9,
       "score": [
         2,
         3
@@ -342,7 +342,7 @@
   "honors_checked": 1792811430.083863,
   "draft": {
     "year": 2027,
-    "checked": 1792809034.74471
+    "checked": 1792812638.1626222
   },
   "health": {},
   "season": {
@@ -357,7 +357,9 @@
       "2026-10-17",
       "2026-10-19"
     ],
-    "post_ready": {}
+    "post_ready": {
+      "2026-10-23": 1792812637.5655675
+    }
   },
   "contracts": {
     "oswaldo cabrera": {
