@@ -5,11 +5,11 @@
       "status": "In Progress",
       "innings": 3,
       "score": [
-        0,
+        1,
         2
       ],
       "started": true,
-      "scored": 2
+      "scored": 3
     },
     "849802": {
       "abstract": "Preview",
