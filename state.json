@@ -2,7 +2,7 @@
   "games": {
     "849802": {
       "abstract": "Final",
-      "status": "Game Over",
+      "status": "Final",
       "innings": 9,
       "score": [
         4,
@@ -347,11 +347,10 @@
       "2026-10-18",
       "2026-10-17",
       "2026-10-19",
-      "2026-10-23"
+      "2026-10-23",
+      "2026-10-24"
     ],
-    "post_ready": {
-      "2026-10-24": 1792900227.7529435
-    }
+    "post_ready": {}
   },
   "contracts": {
     "oswaldo cabrera": {
