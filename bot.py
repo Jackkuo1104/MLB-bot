@@ -105,7 +105,7 @@ AWARD_ZH = {
     "NLREL": "國聯年度最佳救援投手", "ALSS": "美聯銀棒獎", "NLSS": "國聯銀棒獎",
     "ALGG": "美聯金手套獎", "NLGG": "國聯金手套獎", "ALPG": "美聯白金手套獎", "NLPG": "國聯白金手套獎",
     "ALAS": "美聯明星隊名單", "NLAS": "國聯明星隊名單", "ASMVP": "明星賽 MVP",
-    "HRDERBYWIN": "全壘打大賽冠軍", "HRDERBY": "全壘打大賽參賽者",
+    "HRDERBYWIN": "全壘打大賽冠軍", "HRDERBY": "全壘打大賽參賽者", "FUTMVP": "未來之星賽 MVP",
     "ALCSMVP": "美聯冠軍賽 MVP", "NLCSMVP": "國聯冠軍賽 MVP", "WSMVP": "世界大賽 MVP",
     "WSCHAMP": "世界大賽冠軍", "WSCHAMPMGR": "世界大賽冠軍總教練",
     "MLBAFIRST": "年度最佳陣容（第一隊）", "MLBSECOND": "年度最佳陣容（第二隊）",
@@ -114,6 +114,8 @@ AWARD_ZH = {
     "BABERUTH": "貝比魯斯獎", "LOUGEHRIG": "盧蓋瑞格獎", "MLBPCPOY": "球員票選年度最佳球員",
     "MLBPCMOY": "球員票選年度風雲人物", "WBCMVP": "世界棒球經典賽 MVP", "WBCTT": "經典賽明星隊",
 }
+# 小聯盟的獎項通常不發，這幾個例外（明星週的未來之星賽 MVP）
+EXTRA_AWARDS = {"FUTMVP"}
 
 TX_LABELS = {  # 異動類型 → (標題, 顏色)
     "TR": ("🔄 交易", 0x1E88E5), "SFA": ("✍️ 簽約", 0x43A047), "SGN": ("✍️ 簽約", 0x43A047),
@@ -240,7 +242,8 @@ async def fetch_award_defs(session: aiohttp.ClientSession) -> list[dict]:
         _award_defs = [
             a for a in data.get("awards", [])
             if a.get("active")
-            and (a.get("sport", {}).get("id") == 1 or a.get("league", {}).get("id") in AWARD_LEAGUES)
+            and (a.get("sport", {}).get("id") == 1 or a.get("league", {}).get("id") in AWARD_LEAGUES
+                 or a.get("id") in EXTRA_AWARDS)
         ]
         _awards_loaded_at = time.time()
     return _award_defs
@@ -1521,12 +1524,15 @@ async def award_updates(session: aiohttp.ClientSession, state: dict, initial: bo
 
     results = await asyncio.gather(*(fetch(a, s) for a, s in pairs))
     seen = set(state["awards"])
+    # 剛加進 EXTRA_AWARDS 的獎項：已經公布過的得主只記錄、不補發
+    quiet = EXTRA_AWARDS - set(state.get("extra_awards", []))
+    state["extra_awards"] = sorted(EXTRA_AWARDS)
     keys, new = [], {}
     for (award, season), recipients in zip(pairs, results):
         for r in recipients:
             key = recipient_key(r)
             keys.append(key)
-            if key not in seen:
+            if key not in seen and award["id"] not in quiet:
                 new.setdefault((award["id"], season), (award, []))[1].append(r)
     state["awards"] = keys  # 只保留目前檢查的年度，檔案不會一直變大
     state["awards_checked"] = time.time()
