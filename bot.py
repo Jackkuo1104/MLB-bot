@@ -47,8 +47,21 @@ MLB_API = "https://statsapi.mlb.com/api/v1"
 ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/news"
 TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single"  # Google 免費翻譯
 # 標題或摘要符合這些字的新聞當作「紀錄」消息發送（不限 NEWS_TYPES）
-RECORD_NEWS = re.compile(r"\brecords?\b|record-breaking|all-time|first player|"
-                         r"MLB history|major league history|franchise history", re.I)
+# 只認「破／追平紀錄」這類說法；record 當動詞或戰績（road record）、報紙名（Bergen Record）不算
+RECORD_NEWS = re.compile(r"\b(?:set|sets|setting|break|breaks|breaking|broke|tie|ties|tying|tied|extend|extends|"
+                         r"extended)\b[^.]{0,30}?\brecords?\b|record-(?:breaking|setting|tying)|"
+                         r"\b(?:franchise|league|MLB|all-time|single-game|single-season|postseason|career|world) "
+                         r"records?\b|\ball-time\b|first player|MLB history|major league history|"
+                         r"franchise history", re.I)
+# 標題有這些字才標成「重大消息」（交易、簽約、傷病、禁賽、人事異動…），其他的標成一般新聞
+BIG_NEWS = re.compile(r"^(?:Sources?|Breaking)\b|\btrade[sd]?\b|\btrading\b|\bsign(?:s|ed|ing)?\b|\bagree[sd]?\b|"
+                      r"\bcontract|\bextension|\breleased?\b|\bDFA\b|\bdesignated?\b|\binjur|\bsurgery|"
+                      r"\bTommy John\b|\btorn\b|\btears?\b|\bfractur|\bsprain|\bstrain|\bconcussion|"
+                      r"\bout (?:for|indefinitely|as)\b|\bruled out\b|\b(?:to|will) miss\b|\bsidelined\b|"
+                      r"\bsuspen|\bfined\b|\bbann?ed\b|\barrest|\bcharged\b|\bfire[sd]?\b|\bhire[sd]?\b|\bnamed?\b|"
+                      r"\bretir|\bdie[sd]\b|\bdeath\b|\bpassed away\b|\breturn(?:s|ing)? as\b|\bresign|"
+                      r"\bsteps? down\b|\bposting\b|\bqualifying offer|\bfree agen|\bnon-tender", re.I)
+BIG_NEWS_SOURCES = re.compile(r"\bsources? (?:say|said|told|tell)", re.I)  # 摘要寫「消息人士告訴 ESPN」也算
 STATE_FILE = "state.json"
 SEEN_LIMIT = 500  # 只保留最近的 ID，避免檔案無限變大
 TW = timezone(timedelta(hours=8))
@@ -277,6 +290,7 @@ PRE_ZH = [  # 送去翻譯前先換掉的固定說法
 # 運動術語：Google 常翻錯，翻完後修正。（原文有這個英文，譯文裡的錯誤翻法 → 正確說法）
 # 只在原文真的有那個英文時才改，不會誤改別的句子；看到新的怪翻譯就加一行
 TERM_FIX = [
+    (r"^Sources?:", r"^(?:消息)?來源：|^資料來源：", "消息人士："),
     (r"four-seam|four-seamer", r"四縫(?:線)?快球|四接縫快球|四縫線球", "四縫線速球"),
     (r"two-seam|two-seamer", r"二縫(?:線)?快球|兩縫(?:線)?快球", "二縫線速球"),
     (r"fastball|heater", r"快球|快速球|加熱器", "速球"),
@@ -328,35 +342,27 @@ TERM_FIX = [
     (r"\bextension\b", r"延期", "延長合約"),
     (r"pinch[- ]hit", r"捏擊|捏打", "代打"),
     (r"double play", r"雙打", "雙殺"),
+    (r"World Series", r"世界職業棒球大賽|世界職棒大賽", "世界大賽"),
+    (r"regular season", r"常規賽", "例行賽"),
+    (r"\bmanager", r"(?<!總)經理", "總教練"),
+    (r"\bout as\b", r"出任", "卸任"),
+    (r"\beven(?:s|ed)? (?:the )?(?:series|ALCS|NLCS|ALDS|NLDS|World Series)", r"甚至是?|甚至", "扳平"),
+    (r"clubhouse", r"會所|俱樂部會所", "休息室"),
+    (r"posting system|\bposted\b", r"發布系統|郵寄系統|張貼系統|過帳系統|發佈系統", "入札制度"),
+    (r"broadcaster", r"廣播公司|廣播員", "播報員"),
+    (r"rainout|rained out", r"雨停|雨水", "因雨延賽"),
+    (r"\bowner", r"所有者|擁有者", "老闆"),
+    (r"front office", r"前台|前辦公室", "球團"),
+    (r"\bclub\b", r"俱樂部", "球隊"),
+    (r"\bteam", r"團隊", "球隊"),
 ]
 TERM_FIX = [(re.compile(s, re.I), re.compile(w), r) for s, w, r in TERM_FIX]
-# 文章沒標記到的人名：連續 2~4 個大寫開頭的字；含下列常見字的不算人名
-NAME_LIKE = re.compile(r"(?<![\w'’])[A-Z][a-z'’.-]+(?: +(?:[A-Z][a-z'’.-]+|Jr\.?|Sr\.?|II|III|IV)){1,3}(?![\w'’])")
-NOT_NAME = set("""a an the and or of in on at to for with from by vs after before as is are was
-game games highlights east west eastern western semifinals finals final conference most valuable
-player players week month year rookie defensive all star league cup draft trade trades free agent
-summer preseason season playoffs playoff day night monday tuesday wednesday thursday friday saturday
-sunday january february march april may june july august september october november december award
-awards team teams first second third world series american national division wild card opening spring
-training hall fame gold glove silver slugger fantasy basketball baseball mock points power rankings now
-later new era takeaways updates update latest news what why how who which when where takeaway sources
-source report reports breaking live recap preview analysis grades grade best worst top big early late
-manager coach coaches general president owner front office mvp""".split())
 CJK_LATIN = (re.compile(r"([一-鿿])([A-Za-z0-9])"), re.compile(r"([A-Za-z0-9.])([一-鿿])"))
 POS_ZH = {"LHP": "左投", "RHP": "右投", "P": "投手", "C": "捕手", "1B": "一壘手", "2B": "二壘手",
           "3B": "三壘手", "SS": "游擊手", "LF": "左外野手", "CF": "中外野手", "RF": "右外野手",
           "OF": "外野手", "IF": "內野手", "INF": "內野手", "DH": "指定打擊", "UT": "工具人",
           "SP": "先發投手", "RP": "後援投手", "TWP": "二刀流"}
 POS_BEFORE_NAME = re.compile(r"\b(LHP|RHP|INF|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UT|P|C)\s+(?=[A-Z])")
-
-
-def guess_names(text: str) -> set[str]:
-    names = set()
-    for m in NAME_LIKE.finditer(text or ""):
-        words = m.group(0).split()
-        if not any(w.lower().strip(".'’") in NOT_NAME for w in words):
-            names |= person_terms(m.group(0))
-    return names
 
 
 def person_terms(*names: str) -> set[str]:
@@ -369,6 +375,9 @@ def person_terms(*names: str) -> set[str]:
             last = re.sub(r"\s+(Jr\.?|Sr\.?|II|III|IV)$", "", name).split()[-1]
             if len(last) >= 3:
                 terms.add(last)
+            first = name.split()[0]
+            if re.search(r"[a-z][A-Z]", first):  # DeAndre、JaVale 這種名字也常單獨出現
+                terms.add(first)
     return terms
 
 
@@ -422,7 +431,10 @@ async def translate(session: aiohttp.ClientSession, text: str, keep=()) -> str:
             if source.search(text):
                 out = wrong.sub(right, out)
         out = re.sub(r"\b(Jr|Sr|St)。", r"\1.", out)  # Jr. 的句點不是句號
-        out = re.sub(r"(?<=[一-鿿]) +(?=[一-鿿])", "", out)  # 換掉術語後，中文之間不留空格
+        # 保留英文的名字後面的所有格：Uecker's 家人 → Uecker 的家人、Dodgers' → Dodgers 的
+        out = re.sub(r"([A-Za-z])(?:['’]s|(s)['’])(?=[\s「“\"一-鿿]|$)",
+                     lambda m: m.group(1) + (m.group(2) or "") + " 的", out)
+        out = re.sub(r"(?<=[一-鿿]) +(?=[一-鿿「“])", "", out)  # 換掉術語後，中文之間不留空格
         for pattern in CJK_LATIN:  # 中文和英文、數字之間加空格比較好讀
             out = pattern.sub(r"\1 \2", out)
     except Exception as e:
@@ -441,26 +453,6 @@ def zh(text: str) -> str:
 
 async def prefetch(session: aiohttp.ClientSession, texts, keep=()) -> None:
     await asyncio.gather(*(translate(session, t, keep) for t in set(texts) if t))
-
-
-async def zh_article(session: aiohttp.ClientSession, article: dict) -> dict:
-    """新聞標題和摘要翻成中文；文章標記的球員、教練、球隊名稱保留英文"""
-    keep = set()
-    for line in f"{article.get('headline') or ''}\n{article.get('description') or ''}".splitlines():
-        keep |= guess_names(line)
-    for c in article.get("categories") or []:
-        if c.get("type") in ("athlete", "coach", "person"):
-            keep |= person_terms(c.get("description", ""))
-        elif c.get("type") == "team" and c.get("description"):
-            keep.add(c["description"])
-    out = dict(article)
-    for key in ("headline", "description"):
-        out[key] = await translate(session, article.get(key) or "", keep)
-    return out
-
-
-async def zh_articles(session: aiohttp.ClientSession, articles: list[dict]) -> list[dict]:
-    return list(await asyncio.gather(*(zh_article(session, a) for a in articles)))
 
 
 _T, _W = r"(?P<team>.+?)", r"(?P<who>.+?)"
@@ -844,8 +836,15 @@ def wanted_news(article: dict) -> bool:
     return article.get("type") in NEWS_TYPES or is_record(article)
 
 
+def is_big(article: dict) -> bool:
+    return bool(BIG_NEWS.search(article.get("headline") or "")
+                or BIG_NEWS_SOURCES.search(article.get("description") or ""))
+
+
 def news_label(article: dict) -> str:
-    return "📊 **MLB 紀錄**" if is_record(article) else "🚨 **MLB 重大消息**"
+    if is_record(article):
+        return "📊 **MLB 紀錄**"
+    return "🚨 **MLB 重大消息**" if is_big(article) else "📰 **MLB 新聞**"
 
 
 def is_periodic(award: dict) -> bool:
@@ -1501,8 +1500,7 @@ async def news_updates(session: aiohttp.ClientSession, state: dict, initial: boo
     state["news"] += [article_id(a) for a in new_articles]
     if initial:
         return []
-    # 用英文原文判斷是不是紀錄類新聞，再發翻譯後的內容
-    return [(news_label(a), news_embed(z)) for a, z in zip(new_articles, await zh_articles(session, new_articles))]
+    return [(news_label(a), news_embed(a)) for a in new_articles]  # 新聞直接發英文原文
 
 
 def recipient_key(r: dict) -> str:
@@ -1925,8 +1923,7 @@ async def mlb_command(interaction: discord.Interaction,
     if not articles:
         await interaction.followup.send("ESPN 最近 50 則新聞裡沒有重大消息。")
         return
-    articles = await zh_articles(bot.session, articles[:count])
-    await interaction.followup.send(embeds=[news_embed(a) for a in articles])
+    await interaction.followup.send(embeds=[news_embed(a) for a in articles[:count]])
 
 
 @bot.tree.command(name="moves", description="查看最近的 MLB 簽約、交易")
