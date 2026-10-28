@@ -13,8 +13,9 @@ import discord
 from bot import CHANNEL_IDS, DISCORD_TOKEN, collect_updates, save_state
 
 DISCORD_API = "https://discord.com/api/v10"
-LIVE_SECONDS = 150  # 選秀進行中：這次執行再多檢查 2.5 分鐘（GitHub 每次最多跑 5 分鐘，安裝套件約 1 分鐘）
-LIVE_INTERVAL = 20  # 每 20 秒檢查一次
+LIVE_SECONDS = 210  # 選秀或比賽進行中：這次執行再多檢查 3.5 分鐘（GitHub 每次最多跑 5 分鐘，安裝套件約 15 秒）
+LIVE_INTERVAL = 20  # 選秀進行中每 20 秒檢查一次
+GAME_INTERVAL = 30  # 有即時比分的比賽進行中每 30 秒檢查一次
 SEND_MESSAGES = 1 << 11  # Discord「發送訊息」權限
 TEXT_CHANNEL_TYPES = (0, 5)  # 文字頻道、公告頻道
 
@@ -121,11 +122,14 @@ async def main() -> None:
                 print(f"已發送到 {sum(ok)}/{len(channels)} 個頻道：{content} {embed.title}")
             save_state(state)
             print(f"檢查完成，發送 {sent}/{len(messages) * len(channels)} 則（{len(channels)} 個頻道）")
-            # 選秀進行中才繼續每 20 秒檢查，其他時候檢查一次就結束
-            live = (state.get("draft") or {}).get("live_until", 0) > time.time()
-            if not live or time.monotonic() + LIVE_INTERVAL > deadline:
+            # 選秀或有即時比分的比賽進行中才繼續檢查，其他時候檢查一次就結束
+            draft_live = (state.get("draft") or {}).get("live_until", 0) > time.time()
+            if not draft_live and not state.get("live_games"):
                 break
-            await asyncio.sleep(LIVE_INTERVAL)
+            interval = LIVE_INTERVAL if draft_live else GAME_INTERVAL
+            if time.monotonic() + interval > deadline:
+                break
+            await asyncio.sleep(interval)
 
 
 if __name__ == "__main__":

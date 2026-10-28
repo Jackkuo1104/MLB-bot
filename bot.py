@@ -1261,7 +1261,7 @@ async def bracket_image(session: aiohttp.ClientSession, season: int, date: str) 
                                                 for i in teams})
     font = await bracket.ensure_font(session)
 
-    def box(sid: str, final: bool = False) -> "bracket.Box":
+    def box(sid: str, final: bool = False):
         s = series.get(sid)
         if not s:
             return bracket.Box()
@@ -1406,7 +1406,7 @@ async def season_updates(session: aiohttp.ClientSession, games: list[dict], stat
 async def game_updates(session: aiohttp.ClientSession, state: dict, initial: bool) -> list:
     games = await fetch_games(session)
     messages = day_done_updates(games, state, initial)
-    new_games = {}
+    new_games, live = {}, 0
     for game in games:
         pk = str(game["gamePk"])
         status = game.get("status", {})
@@ -1431,6 +1431,7 @@ async def game_updates(session: aiohttp.ClientSession, state: dict, initial: boo
         if game.get("gameType") != "A" and not follows(  # 明星賽不受 FOLLOW_TEAMS 限制
                 game["teams"]["away"]["team"].get("id"), game["teams"]["home"]["team"].get("id")):
             continue
+        live += abstract == "Live"
 
         notable = any(w in detailed for w in NOTABLE_STATUS)
         # 舊版的狀態沒有 innings，當作已經發到目前這局，不補發
@@ -1468,6 +1469,7 @@ async def game_updates(session: aiohttp.ClientSession, state: dict, initial: boo
             messages.append(scoring_alert(game, fresh))
         cur["scored"] = len(plays)
     state["games"] = new_games
+    state["live_games"] = live  # 有即時比分的比賽正在進行：check_once 這次會每 30 秒再檢查
     before, after = await season_updates(session, games, state, initial)
     return before + messages + after
 
