@@ -2,13 +2,13 @@
   "games": {
     "849803": {
       "abstract": "Live",
-      "status": "Warmup",
+      "status": "In Progress",
       "innings": 0,
       "score": [
         0,
         0
       ],
-      "started": false,
+      "started": true,
       "scored": 0
     },
     "849799": {
@@ -356,7 +356,7 @@
   "honors_checked": 1793145039.4744732,
   "draft": {
     "year": 2027,
-    "checked": 1793142627.6556587
+    "checked": 1793146231.0373244
   },
   "health": {},
   "season": {
