@@ -3,7 +3,7 @@
     "849803": {
       "abstract": "Live",
       "status": "In Progress",
-      "innings": 5,
+      "innings": 6,
       "score": [
         2,
         2
@@ -359,7 +359,7 @@
   "honors_checked": 1793152726.2150297,
   "draft": {
     "year": 2027,
-    "checked": 1793149859.3696558
+    "checked": 1793153467.5780668
   },
   "health": {},
   "season": {
