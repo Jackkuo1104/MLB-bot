@@ -1482,7 +1482,7 @@ async def tx_updates(session: aiohttp.ClientSession, state: dict, initial: bool)
     try:  # 先從最新的新聞記下合約金額（簽約時附上）
         remember_contracts(state, await fetch_news(session))
     except Exception as e:
-        print(f"⚠️ 從新聞找合約金額失敗：{e}")
+        print(f"⚠️ 從新聞找合約金額失敗：{error_text(e)}")
     if initial:
         return []
     await asyncio.gather(*(translate_tx(session, t) for t in new_txs))
@@ -1756,6 +1756,7 @@ async def draft_updates(session: aiohttp.ClientSession, state: dict, initial: bo
 # ===== 健康檢查：資料來源連續好幾個小時抓不到時，在 Discord 提醒 =====
 HEALTH_ALERT_HOURS = 6  # 連續失敗這麼久才提醒（偶爾故障幾分鐘不吵）
 HEALTH_REMIND_DAYS = 7  # 一直沒恢復時，每隔幾天再提醒一次
+QUICK_SOURCES = ("games", "draft")  # 加密檢查時要看的來源
 
 
 def health_fail(health: dict, name: str, error) -> list:
@@ -1787,8 +1788,14 @@ def health_ok(health: dict, name: str) -> list:
     return [("✅ **MLB bot 健康檢查**", embed)]
 
 
-async def collect_updates(session: aiohttp.ClientSession) -> tuple[list, dict]:
-    """回傳 (要發送的 [(文字, embed)], 更新後的狀態)；呼叫端發完訊息後要 save_state"""
+def error_text(e: Exception) -> str:
+    """錯誤訊息；逾時這類錯誤本身沒有說明文字，就顯示錯誤類型"""
+    return f"{type(e).__name__}：{e}" if str(e) else type(e).__name__
+
+
+async def collect_updates(session: aiohttp.ClientSession, quick: bool = False) -> tuple[list, dict]:
+    """回傳 (要發送的 [(文字, embed)], 更新後的狀態)；呼叫端發完訊息後要 save_state。
+    quick：比賽或選秀進行中的加密檢查，只看比分和選秀（異動、新聞、獎項每次執行抓一次就好）"""
     state = load_state() or {}
     health = state.setdefault("health", {})
     _translate_stats.update(ok=0, fail=0)
@@ -1800,14 +1807,16 @@ async def collect_updates(session: aiohttp.ClientSession) -> tuple[list, dict]:
                                     ("awards", "獎項", award_updates, []),
                                     ("honors", "每週/每月獎項", honor_updates, []),
                                     ("draft", "選秀", draft_updates, {})):
+        if quick and key not in QUICK_SOURCES:
+            continue
         # 第一次抓到某個來源時只記錄現有資料，不發文，避免洗版
         initial = key not in state
         state.setdefault(key, empty)
         try:
             messages += await check(session, state, initial)
         except Exception as e:
-            print(f"⚠️ 抓取{name}失敗：{e}")
-            messages += health_fail(health, name, e)
+            print(f"⚠️ 抓取{name}失敗：{error_text(e)}")
+            messages += health_fail(health, name, error_text(e))
             if initial:
                 del state[key]  # 下次成功時再初始化
             continue

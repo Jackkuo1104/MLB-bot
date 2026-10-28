@@ -112,8 +112,9 @@ async def main() -> None:
         channels = await target_channels(session)
         if not channels:  # 不存狀態，等 bot 加進頻道後再發，消息不會漏掉
             raise SystemExit("bot 還沒有被加進任何頻道：請在頻道的權限設定加入這個 bot 並允許發送訊息")
+        quick = False  # 第一次全部檢查，之後的加密檢查只看比分和選秀
         while True:
-            messages, state = await collect_updates(session)
+            messages, state = await collect_updates(session, quick)
             sent = 0
             for content, embed, *image in messages:
                 # 每則消息發到所有頻道（可以在不同伺服器）
@@ -130,6 +131,7 @@ async def main() -> None:
             if time.monotonic() + interval > deadline:
                 break
             await asyncio.sleep(interval)
+            quick = True
 
 
 if __name__ == "__main__":
