@@ -3,13 +3,13 @@
     "849803": {
       "abstract": "Live",
       "status": "In Progress",
-      "innings": 1,
+      "innings": 2,
       "score": [
         0,
-        0
+        1
       ],
       "started": true,
-      "scored": 0
+      "scored": 1
     },
     "849799": {
       "abstract": "Preview",
