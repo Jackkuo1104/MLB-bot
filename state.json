@@ -3,7 +3,7 @@
     "849803": {
       "abstract": "Live",
       "status": "In Progress",
-      "innings": 2,
+      "innings": 3,
       "score": [
         0,
         1
@@ -361,7 +361,12 @@
     "year": 2027,
     "checked": 1793146231.0373244
   },
-  "health": {},
+  "health": {
+    "中文翻譯": {
+      "since": 1793149444.797891,
+      "error": "Google 翻譯的請求全部失敗，訊息會先顯示英文"
+    }
+  },
   "season": {
     "opened": 2026,
     "playoffs": 2026,
@@ -389,5 +394,6 @@
   },
   "extra_awards": [
     "FUTMVP"
-  ]
+  ],
+  "live_games": 1
 }
