@@ -5,11 +5,11 @@
       "status": "In Progress",
       "innings": 3,
       "score": [
-        0,
+        1,
         1
       ],
       "started": true,
-      "scored": 1
+      "scored": 2
     },
     "849799": {
       "abstract": "Preview",
@@ -359,14 +359,9 @@
   "honors_checked": 1793148931.0668378,
   "draft": {
     "year": 2027,
-    "checked": 1793146231.0373244
+    "checked": 1793149859.3696558
   },
-  "health": {
-    "中文翻譯": {
-      "since": 1793149444.797891,
-      "error": "Google 翻譯的請求全部失敗，訊息會先顯示英文"
-    }
-  },
+  "health": {},
   "season": {
     "opened": 2026,
     "playoffs": 2026,
