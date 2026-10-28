@@ -1,12 +1,12 @@
 {
   "games": {
     "849803": {
-      "abstract": "Live",
-      "status": "In Progress",
-      "innings": 11,
+      "abstract": "Final",
+      "status": "Game Over",
+      "innings": 12,
       "score": [
         3,
-        3
+        4
       ],
       "started": true,
       "scored": 6
@@ -377,7 +377,9 @@
       "2026-10-24",
       "2026-10-26"
     ],
-    "post_ready": {}
+    "post_ready": {
+      "2026-10-27": 1793161838.7428124
+    }
   },
   "contracts": {
     "oswaldo cabrera": {
@@ -390,5 +392,5 @@
   "extra_awards": [
     "FUTMVP"
   ],
-  "live_games": 1
+  "live_games": 0
 }
