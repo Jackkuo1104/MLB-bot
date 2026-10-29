@@ -1,9 +1,9 @@
 {
   "games": {
     "849799": {
-      "abstract": "Live",
-      "status": "In Progress",
-      "innings": 8,
+      "abstract": "Final",
+      "status": "Game Over",
+      "innings": 9,
       "score": [
         4,
         1
@@ -385,7 +385,9 @@
       "2026-10-26",
       "2026-10-27"
     ],
-    "post_ready": {}
+    "post_ready": {
+      "2026-10-28": 1793243726.552796
+    }
   },
   "contracts": {
     "oswaldo cabrera": {
@@ -398,5 +400,5 @@
   "extra_awards": [
     "FUTMVP"
   ],
-  "live_games": 1
+  "live_games": 0
 }
