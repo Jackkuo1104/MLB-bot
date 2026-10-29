@@ -1,16 +1,5 @@
 {
   "games": {
-    "849803": {
-      "abstract": "Final",
-      "status": "Final",
-      "innings": 12,
-      "score": [
-        3,
-        4
-      ],
-      "started": true,
-      "scored": 6
-    },
     "849799": {
       "abstract": "Live",
       "status": "Warmup",
