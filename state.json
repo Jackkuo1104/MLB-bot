@@ -5,11 +5,11 @@
       "status": "In Progress",
       "innings": 1,
       "score": [
-        0,
+        1,
         0
       ],
       "started": true,
-      "scored": 0
+      "scored": 1
     }
   },
   "days_done": [],
