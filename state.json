@@ -3,7 +3,7 @@
     "849799": {
       "abstract": "Live",
       "status": "In Progress",
-      "innings": 0,
+      "innings": 1,
       "score": [
         0,
         0
@@ -368,7 +368,12 @@
     "year": 2027,
     "checked": 1793232050.002066
   },
-  "health": {},
+  "health": {
+    "中文翻譯": {
+      "since": 1793233411.4963348,
+      "error": "Google 翻譯的請求全部失敗，訊息會先顯示英文"
+    }
+  },
   "season": {
     "opened": 2026,
     "playoffs": 2026,
