@@ -470,7 +470,12 @@
     "year": 2027,
     "checked": 1793695229.7944582
   },
-  "health": {},
+  "health": {
+    "異動": {
+      "since": 1793695546.655817,
+      "error": "TimeoutError"
+    }
+  },
   "season": {
     "opened": 2026,
     "playoffs": 2026,
