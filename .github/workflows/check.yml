@@ -42,5 +42,13 @@ jobs:
             git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
             git add state.json
             git commit -m "Update state.json"
-            git push
+            # GitHub 偶爾推送失敗（暫時的網路/伺服器問題）：先拉最新的再重試，最多 5 次；
+            # 沒存到的話下次會用舊紀錄而重複發文
+            for i in 1 2 3 4 5; do
+              git push && exit 0
+              echo "推送失敗，第 $i 次重試"
+              sleep $((i * 3))
+              git pull --rebase origin main || true
+            done
+            exit 1
           fi
