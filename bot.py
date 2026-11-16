@@ -62,6 +62,22 @@ BIG_NEWS = re.compile(r"^(?:Sources?|Breaking)\b|\btrade[sd]?\b|\btrading\b|\bsi
                       r"\bretir|\bdie[sd]\b|\bdeath\b|\bpassed away\b|\breturn(?:s|ing)? as\b|\bresign|"
                       r"\bsteps? down\b|\bposting\b|\bqualifying offer|\bfree agen|\bnon-tender", re.I)
 BIG_NEWS_SOURCES = re.compile(r"\bsources? (?:say|said|told|tell)", re.I)  # 摘要寫「消息人士告訴 ESPN」也算
+# 記者爆料（標題寫 Sources:、或寫消息人士說）的異動最快：改成「MLB 球員異動」的格式（隊徽、大頭照、合約）發送，
+# 之後官方公布同一筆異動時就不再重發。MLB 的獨家分散在 Passan、Rogers 等好幾位記者，所以不認記者名字
+SCOOP = re.compile(r"^Sources?:|\bsources? (?:say|said|told|tell)", re.I)
+SCOOP_TX = [  # (異動類型代碼, 標題關鍵字)；由上往下找第一個符合的
+    ("TR", r"\btrad(?:e|es|ed|ing)\b|\bacquir"),
+    ("CLW", r"\bclaim"),  # 要在 REL 前面：claimed off waivers 也含有 waive
+    ("DES", r"\bdesignat|\bDFA\b"),
+    ("REL", r"\breleas|\bwaive"),
+    ("RET", r"\bretir"),
+    ("SFA", r"\bagree[sd]?\b|\bsign(?:s|ed|ing)?\b|\bre-sign|\bextensions?\b|\bdeal\b|\bcontract\b"),
+]
+SCOOP_TX = [(code, re.compile(p, re.I)) for code, p in SCOOP_TX]
+# 還沒成交的（要求交易、洽談、有興趣…）照一般新聞發
+NOT_TX = re.compile(r"\brequest|\bexplor|\binterest(?:ed)?\b|\bdiscuss|\btalks\b|\bpursu|\bmeet(?:s|ing)?\b|"
+                    r"\bseek|\bconsider|\bweigh|\bnearing\b|\bclose to\b", re.I)
+SCOOP_TX_KEEP_DAYS = 30  # 爆料過的異動記幾天（期間內官方公布的同一筆異動不再重發）
 STATE_FILE = "state.json"
 SEEN_LIMIT = 500  # 只保留最近的 ID，避免檔案無限變大
 TW = timezone(timedelta(hours=8))
@@ -87,6 +103,7 @@ ALL_STAR_TEAMS = {159: ("AL", "美聯明星隊"), 160: ("NL", "國聯明星隊")
 # 目前的大聯盟球隊 ID → (縮寫, 顯示名稱)；新球隊沒有中文名時顯示英文隊名
 mlb_teams: dict[int, tuple[str, str]] = dict(TEAMS)
 team_terms: set[str] = set()  # 英文隊名（全名、暱稱），翻譯時保留不翻
+team_by_name: dict[str, int] = {}  # 英文全名（Boston Red Sox）→ 球隊 ID，用來對應 ESPN 新聞標的球隊
 _teams_loaded_at = 0.0
 
 # 收錄的獎項：大聯盟層級（含美聯 103、國聯 104）和世界棒球經典賽 160
@@ -227,6 +244,7 @@ async def refresh_teams(session: aiohttp.ClientSession) -> None:
         mlb_teams.update(teams)
         team_terms.update(n for t in data.get("teams", [])
                           for n in (t.get("name"), t.get("teamName"), t.get("clubName")) if n)
+        team_by_name.update({t["name"]: t["id"] for t in data.get("teams", []) if t.get("name") and t["id"] in teams})
         _teams_loaded_at = time.time()
 
 
@@ -265,11 +283,19 @@ def award_seasons() -> list[int]:
     return [now.year - 1, now.year] if now.month <= 3 else [now.year]
 
 
+NEWS_CACHE_SECONDS = 30  # 同一次檢查裡（合約金額、新聞）共用同一批新聞，不重複抓
+_news_cache: dict[int, tuple[float, list[dict]]] = {}
+
+
 async def fetch_news(session: aiohttp.ClientSession, limit: int = 50) -> list[dict]:
+    cached = _news_cache.get(limit)
+    if cached and time.monotonic() - cached[0] < NEWS_CACHE_SECONDS:
+        return cached[1]
     data = await get_json(session, ESPN_NEWS_URL, {"limit": str(limit)})
     articles = data.get("articles") or []
     if not articles:  # ESPN 一定有新聞；抓到空的代表格式改了，讓健康檢查知道
         raise RuntimeError("ESPN 新聞回傳是空的")
+    _news_cache[limit] = (time.monotonic(), articles)
     return articles  # 新到舊
 
 
@@ -809,6 +835,86 @@ def award_message(award: dict, season: str, recipients: list[dict]) -> tuple[str
     return "🏆 **MLB 獎項揭曉**", embed
 
 
+def published_at(article: dict) -> datetime | None:
+    try:
+        return datetime.fromisoformat((article.get("published") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def article_image(article: dict) -> str | None:
+    """新聞的圖片：ESPN 有時第一張放多年前的無關資料照，
+    有近期的圖就跳過這種舊照（網址裡有拍攝年份：/photo/2015/0802/）"""
+    images = [i["url"] for i in article.get("images") or [] if i.get("url")]
+    published = published_at(article)
+
+    def recent(url: str) -> bool:
+        m = re.search(r"/photo/(\d{4})/", url)
+        return not m or not published or published.year - int(m.group(1)) <= 1
+
+    return next((u for u in images if recent(u)), images[0] if images else None)
+
+
+def scoop_tx_report(article: dict) -> tuple[str, list[int], list[dict]] | None:
+    """記者爆料的異動：消息人士說、標題寫到異動、提到大聯盟球隊和球員才算；回傳 (異動類型代碼, 球隊 ID, 球員)"""
+    headline, desc = article.get("headline") or "", article.get("description") or ""
+    if not SCOOP.search(f"{headline} {desc}"):
+        return None
+    code = next((c for c, pattern in SCOOP_TX if pattern.search(headline)), None)
+    if not code or NOT_TX.search(headline):
+        return None
+    cats = article.get("categories") or []
+    team_cats = {team_by_name[c["description"]]: c["description"] for c in cats
+                 if c.get("type") == "team" and c.get("description") in team_by_name}
+    teams = list(team_cats)
+    if code != "TR" and len(teams) > 1:  # 簽約等異動的新聞也會標原球隊：只取標題提到的那隊
+        teams = [t for t in teams if team_cats[t].split()[-1] in headline] or teams
+    players = [c for c in cats if c.get("type") == "athlete" and c.get("athleteId") and c.get("description")]
+    named = [p for p in players
+             if re.sub(r"\s+(Jr\.?|Sr\.?|II|III|IV)$", "", p["description"]).split()[-1] in headline]
+    named = named or (players if len(players) == 1 else [])
+    if not teams or not named or len(named) > 3:  # 提到一大堆球員的是分析文章，不是單筆異動
+        return None
+    return code, teams, named
+
+
+async def scoop_tx_message(session: aiohttp.ClientSession, article: dict, code: str, teams: list[int],
+                           players: list[dict], book: dict) -> tuple[str, discord.Embed]:
+    """和官方異動一樣的格式：隊名+隊徽、中文敘述、簽約附合約（新聞有寫金額就附上）、球員大頭照"""
+    names = [p["description"] for p in players]
+    headline, desc = article.get("headline") or "", article.get("description") or ""
+    description = await translate(session, desc or headline, person_terms(*names))
+    if code == "SFA":
+        contract = contract_type(f"{headline} {desc}", "合約")
+        lines = []
+        for name in names:
+            entry = book.get(norm_name(name)) or {}
+            money = entry.get("text")
+            lines.append(f"💰 {name}：{contract}｜{money}（依 ESPN 報導）" if money
+                         else f"📄 {name}：{contract}（金額未公開）")
+            lines += contract_extra(entry)
+        description += "\n\n" + "\n".join(lines)
+    label, color = TX_LABELS[code]
+    embed = discord.Embed(title=label, url=article.get("links", {}).get("web", {}).get("href"),
+                          description=description[:4000], color=color)
+    if len(teams) == 1:
+        embed.set_author(name=team_name(teams[0]),
+                         icon_url=f"https://midfield.mlbstatic.com/v1/team/{teams[0]}/spots/72")
+    else:  # 交易牽涉好幾隊：列出所有球隊
+        embed.set_author(name=" ↔ ".join(team_name(t) for t in teams)[:256])
+    if len(players) == 1:
+        embed.set_thumbnail(url=f"https://a.espncdn.com/i/headshots/mlb/players/full/{players[0]['athleteId']}.png")
+    published = published_at(article)
+    day = published.astimezone(TW).strftime("%Y-%m-%d") if published else ""
+    embed.set_footer(text=f"MLB 異動｜記者爆料｜{day}" if day else "MLB 異動｜記者爆料")
+    return "📰 **MLB 球員異動**", embed
+
+
+def scoop_key(code: str, name: str) -> str:
+    """爆料和官方異動比對用；官方的簽約分 SFA（自由球員）、SGN（一般簽約），都算簽約"""
+    return f"{'SFA' if code == 'SGN' else code}|{norm_name(name)}"
+
+
 def news_embed(article: dict) -> discord.Embed:
     embed = discord.Embed(
         title=(article.get("headline") or "（無標題）")[:256],
@@ -818,9 +924,9 @@ def news_embed(article: dict) -> discord.Embed:
     )
     if article.get("byline"):
         embed.set_author(name=article["byline"][:256])
-    images = article.get("images") or []
-    if images and images[0].get("url"):
-        embed.set_image(url=images[0]["url"])
+    image = article_image(article)
+    if image:
+        embed.set_image(url=image)
     published = article.get("published")
     if published:
         try:
@@ -909,10 +1015,11 @@ CONTRACT_MONEY = re.compile(
     r"\$(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>million|billion|M|B)\b", re.I)
 CONTRACT_YEARS = re.compile(r"\b(?P<n>\d+|one|two|three|four|five|six|seven|eight|nine|ten)[- ]year\b", re.I)
 CONTRACT_WORDS = re.compile(r"\b(agree|agrees|agreed|sign|signs|signed|re-sign|extension|deal|contract)\b", re.I)
+NUM = r"(?P<n>\d+|one|two|three|four|five|six|seven|eight|nine|ten)"  # 年數可能寫數字或英文（2-year、two-year）
 CONTRACT_TYPES = [  # 異動敘述裡的合約種類 → 中文（由上往下找第一個符合的）
-    (r"minor league contract", "小聯盟合約"), (r"major league contract", "大聯盟合約"),
-    (r"\b(?P<n>\d+)-year (?:contract )?extension", "{n} 年延長合約"), (r"\bextension\b", "延長合約"),
-    (r"\b(?P<n>\d+)-year", "{n} 年合約"), (r"\bone-year", "1 年合約"),
+    (r"minor league (?:contract|deal)", "小聯盟合約"), (r"major league (?:contract|deal)", "大聯盟合約"),
+    (rf"\b{NUM}-year (?:contract )?extension", "{n} 年延長合約"), (r"\bextension\b", "延長合約"),
+    (rf"\b{NUM}-year", "{n} 年合約"),
 ]
 CONTRACT_TYPES = [(re.compile(p, re.I), t) for p, t in CONTRACT_TYPES]
 SIGN_CODES = ("SFA", "SGN")
@@ -1026,7 +1133,7 @@ def contract_type(sentence: str, default: str) -> str:
     for pattern, zh_type in CONTRACT_TYPES:
         m = pattern.search(sentence)
         if m:
-            return zh_type.format(**m.groupdict())
+            return zh_type.format(**{k: NUM_WORDS.get((v or "").lower(), v) for k, v in m.groupdict().items()})
     return default
 
 
@@ -1488,9 +1595,14 @@ async def tx_updates(session: aiohttp.ClientSession, state: dict, initial: bool)
     await asyncio.gather(*(translate_tx(session, t) for t in new_txs))
     await prefetch(session, [t.get("typeDesc", "") for t in new_txs if t.get("typeCode") not in TX_LABELS])
     messages, posted = [], set()
+    reported = state.get("scoop_tx", {})
     for tx in new_txs:
         desc = tx.get("description", "")
         if desc in posted:  # 多人交易常會每個球員各一筆相同敘述，只發一次
+            continue
+        name = (tx.get("person") or {}).get("fullName")
+        if name and scoop_key(tx.get("typeCode", ""), name) in reported:  # 記者已經爆料過，不再重發
+            posted.add(desc)
             continue
         posted.add(desc)
         messages.append(tx_message(tx, state.get("contracts")))
@@ -1500,12 +1612,26 @@ async def tx_updates(session: aiohttp.ClientSession, state: dict, initial: bool)
 async def news_updates(session: aiohttp.ClientSession, state: dict, initial: bool) -> list:
     seen = set(state["news"])
     new_articles = [a for a in await fetch_news(session)
-                    if wanted_news(a) and article_id(a) not in seen]
+                    if (wanted_news(a) or scoop_tx_report(a)) and article_id(a) not in seen]
     new_articles.reverse()  # 舊的先發
     state["news"] += [article_id(a) for a in new_articles]
     if initial:
         return []
-    return [(news_label(a), news_embed(a)) for a in new_articles]  # 新聞直接發英文原文
+    remember_contracts(state, new_articles)  # 這則新聞自己寫的金額、條款
+    reported = state.setdefault("scoop_tx", {})
+    now = time.time()
+    for k in [k for k, t in reported.items() if now - t > SCOOP_TX_KEEP_DAYS * 86400]:
+        del reported[k]
+    messages = []
+    for a in new_articles:
+        report = scoop_tx_report(a)
+        if report:  # 爆料的異動用球員異動的格式，其他的照原本的新聞格式（直接發英文原文）
+            code, teams, players = report
+            messages.append(await scoop_tx_message(session, a, code, teams, players, state.get("contracts", {})))
+            reported.update({scoop_key(code, p["description"]): now for p in players})
+        else:
+            messages.append((news_label(a), news_embed(a)))
+    return messages
 
 
 def recipient_key(r: dict) -> str:
